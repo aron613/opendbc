@@ -493,6 +493,14 @@ FW_VERSIONS = {
       b'\xf1\x00ON  MFC  AT USA LHD 1.00 1.04 99211-S9100 211227',
     ],
   },
+  CAR.HYUNDAI_PALISADE_LX3: {
+    (Ecu.fwdCamera, 0x7c4, None): [
+      b'\xf1\x00LX31.001.011.002551000HKP_LX325_50430099211P9020',
+    ],
+    (Ecu.fwdRadar, 0x7d0, None): [
+      b'\xf1\x00LX3__               1.00 1.01 99110P9200          ',
+    ],
+  },
   CAR.HYUNDAI_VELOSTER: {
     (Ecu.fwdRadar, 0x7d0, None): [
       b'\xf1\x00JS__ SCC H-CUP      1.00 1.02 95650-J3200         ',

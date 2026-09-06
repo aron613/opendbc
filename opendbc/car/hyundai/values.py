@@ -403,6 +403,27 @@ class CAR(Platforms):
     CarSpecs(mass=1999, wheelbase=2.9, steerRatio=15.6 * 1.15, tireStiffnessFactor=0.63),
     flags=HyundaiFlags.MANDO_RADAR | HyundaiFlags.CHECKSUM_CRC8,
   )
+  # LX3 (3rd-gen) Palisade, redesigned for MY2026 with HDA II + LFA2 (angle steering instead of torque).
+  # Firmware pulled from a 2026 Palisade Calligraphy (gas, non-hybrid) confirms platform code "LX3".
+  #
+  # Harness note: this car uses a comma Hyundai N harness (car_parts below), but with the CAN H/L
+  # pairs manually swapped from stock N pinout -- this specific vehicle's OEM connector does not
+  # match the standard N pinout without the swap. With the pins flipped, the resulting bus mapping is:
+  #   - bus 1: powertrain/steering (STEERING_SENSORS 0x125, LFA_ALT 0xCB)
+  #   - bus 0: camera/radar
+  #   - bus 2: mirror of bus 0
+  # A stock (non-flipped) N harness on this platform would see buses 0 and 1 swapped from the above.
+  HYUNDAI_PALISADE_LX3 = HyundaiCanFDPlatformConfig(
+    [
+      HyundaiCarDocs("Hyundai Palisade (with HDA II & LFA2) 2026", "Highway Driving Assist II & Lane Follow Assist 2",
+                     car_parts=CarParts.common([CarHarness.hyundai_n])),
+    ],
+    # mass: Calligraphy AWD 3.5L V6 (gas) curb weight, 4,872 lb -> kg
+    # wheelbase: 116.9 in -> m (Hyundai-quoted, all trims)
+    # steerRatio: 14.3:1 overall ratio (Hyundai-quoted, all trims)
+    CarSpecs(mass=4872 * CV.LB_TO_KG, wheelbase=2.97, steerRatio=14.3),
+    flags=HyundaiFlags.CANFD_ANGLE_STEERING,
+  )
   HYUNDAI_VELOSTER = HyundaiPlatformConfig(
     [HyundaiCarDocs("Hyundai Veloster 2019-20", min_enable_speed=5. * CV.MPH_TO_MS, car_parts=CarParts.common([CarHarness.hyundai_e]))],
     CarSpecs(mass=2917 * CV.LB_TO_KG, wheelbase=2.8, steerRatio=13.75 * 1.15, tireStiffnessFactor=0.5),
