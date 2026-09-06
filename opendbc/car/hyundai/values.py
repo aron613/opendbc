@@ -422,7 +422,12 @@ class CAR(Platforms):
     # wheelbase: 116.9 in -> m (Hyundai-quoted, all trims)
     # steerRatio: 14.3:1 overall ratio (Hyundai-quoted, all trims)
     CarSpecs(mass=4872 * CV.LB_TO_KG, wheelbase=2.97, steerRatio=14.3),
-    flags=HyundaiFlags.CANFD_ANGLE_STEERING,
+    # CANFD_ALT_BUTTONS: confirmed from route 69fb86b6677ce882/00000003--94eb544029 (full rlog, all
+    # segments) -- standard CRUISE_BUTTONS (0x1CF, 8 bytes) never appears on any bus, while
+    # CRUISE_BUTTONS_ALT (0x1AA, 16 bytes) is present continuously on bus 1. Note: this only confirms
+    # the message/address the car uses; the specific button-press bits were not observed changing in
+    # that recording, so the exact bit layout is unverified pending a drive with deliberate button presses.
+    flags=HyundaiFlags.CANFD_ANGLE_STEERING | HyundaiFlags.CANFD_ALT_BUTTONS,
   )
   HYUNDAI_VELOSTER = HyundaiPlatformConfig(
     [HyundaiCarDocs("Hyundai Veloster 2019-20", min_enable_speed=5. * CV.MPH_TO_MS, car_parts=CarParts.common([CarHarness.hyundai_e]))],
