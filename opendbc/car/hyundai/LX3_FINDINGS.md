@@ -6,7 +6,8 @@ Harness: comma Hyundai N with the CAN H/L pairs manually swapped from stock pino
 Routes referenced:
 - Before pin flip: `69fb86b6677ce882/00000000--3284f58264/0`
 - After pin flip: `69fb86b6677ce882/00000003--94eb544029` (3 segments)
-- Deliberate button-press test: `69fb86b6677ce882/00000008--c7bfd877d8` (7 segments)
+- Deliberate button-press test: `69fb86b6677ce882/00000008--c7bfd877d8` (7 segments, car unrecognized → panda in passthrough)
+- First run of this branch, car recognized, parked passive test (LFA ×4 on/off, full-lock sweep, no cruise): `69fb86b6677ce882/00000004--925bf85ead` (2 segments)
 - Reference (known-working, same `hyundai_n` harness, not the owner's car): `KIA_SPORTAGE_HEV_2026` test route `1635e7fee82dec3b/00000000--aa7efe7199`
 
 ## Bus layout (from the owner's own captured logs, after the pin flip)
@@ -39,11 +40,21 @@ The owner's after-flip topology (87 / 222 / 150) closely matches the known-worki
 
 **Verdict: keep the flip. No code-side bus override is needed** — the existing fingerprint-based auto-detection already resolves to the correct bus for this wiring.
 
-**Side effect worth knowing:** because `lka_steering` auto-detects `True` for this car, it will *also* pick up `HyundaiFlags.CANFD_LKA_STEER_MSG` at runtime (dynamically — not something set in `values.py`). For lateral-only operation (`openpilotLongitudinalControl=False`), this means `carcontroller.py` sends steering as `"LKAS"`/`"LKAS_ALT"` (not `"LFA"`), and does **not** send the `"LFA"` (0x12A) or `LFAHDA_CLUSTER` (0x1E0) messages at all — see the revised Open issue 1 below.
+**Side effect worth knowing:** because `lka_steering` auto-detects `True` for this car, it will *also* pick up `HyundaiFlags.CANFD_LKA_STEER_MSG` at runtime (dynamically — not something set in `values.py`). For lateral-only operation (`openpilotLongitudinalControl=False`), this means `carcontroller.py` sends steering as `"LKAS"`/`"LKAS_ALT"` (not `"LFA"`), and does **not** send the `"LFA"` (0x12A) or `LFAHDA_CLUSTER` (0x1E0) messages at all — confirmed on-car, see Open issue 1 (resolved) below.
 
 ## Fingerprint
 
-Platform code `LX3` confirmed in ECU firmware (radar `0x7d0`, camera `0x7c4`). No `eps` (MDPS) firmware response — consistent with every other `CANFD_ANGLE_STEERING` car already in this codebase, none of which have an `eps` FW entry either. Fingerprint added as `CAR.HYUNDAI_PALISADE_LX3` (`HyundaiFlags.CANFD_ANGLE_STEERING | HyundaiFlags.CANFD_ALT_BUTTONS`).
+Platform code `LX3` confirmed in ECU firmware (radar `0x7d0`, camera `0x7c4`). Fingerprint added as `CAR.HYUNDAI_PALISADE_LX3` (`HyundaiFlags.CANFD_ANGLE_STEERING | HyundaiFlags.CANFD_ALT_BUTTONS`).
+
+**EPS firmware (corrected):** earlier passive routes showed no `eps` (MDPS) response, and this doc previously said so. On the first recognized run (`00000004--925bf85ead`) the MDPS *did* answer at `0x7d4`, bus 1:
+
+```
+b'\xf1\x00LX3 MDPS R 1.00 1.03 57700P9000  2551_LX3kI_RLN103'
+```
+
+The car still fingerprinted from FW (source `fw`, not fuzzy, 15 FW entries) with that extra ECU present. Other `CANFD_ANGLE_STEERING` cars in this codebase have no `eps` entry, so the earlier "none of them respond" observation was about those fingerprints, not a property of the MDPS.
+
+Runtime flags observed in `carParams` on the recognized run: `CANFD | CANFD_ANGLE_STEERING | CANFD_ALT_BUTTONS | CANFD_LKA_STEER_MSG | CANFD_LKA_STEER_MSG_ALT` (the last two auto-detected, see bus mapping). `safetyParam` = 1200, `openpilotLongitudinalControl` = False, `pcmCruise` = True.
 
 ## Steering messages
 
@@ -70,16 +81,49 @@ Platform code `LX3` confirmed in ECU firmware (radar `0x7d0`, camera `0x7c4`). N
 
 **`LFAHDA_CLUSTER` (0x1E0/480) `LFA_ICON`** (bit 47, 2 bits) and **`CCNC_0x161` (0x161/353) `LFA_ICON`** (bit 224, 4 bits) both toggled 0↔1 at the *identical* timestamps, matching the owner's described LFA on/off/on/off sequence (4 transitions while parked, one more pair while driving). `LFA_ICON == 0` corresponds to LFA off.
 
-## Open issue 1 (still open — needs on-car verification, not yet a safety wiring decision)
+## Open issue 1 — resolved (LFA button is `LKAS_ALT.LFA_BUTTON` on the camera bus)
 
-Earlier analysis (before the bus mapping was resolved) assumed `carcontroller.py` unconditionally transmits both `LFAHDA_CLUSTER` (0x1E0) and the `"LFA"` message (0x12A) once this car is recognized, which would make reading `LFA_ICON` back circular (we'd just be reading what `mads.py` computed from `CC.enabled`, not the real button).
+**Question:** is `LFA_ICON` (in `LFAHDA_CLUSTER` 0x1E0 and `CCNC_0x161` 0x161) a genuine car signal we can use as the LFA/MADS button, or is it circular with something we transmit?
 
-Now that bus mapping is resolved, this looks less likely to be a problem for a **lateral-only** setup:
-- `create_lfahda_cluster` is only called `if not lka_steering or lka_steering_long`. With `lka_steering=True` (confirmed above) and `openpilotLongitudinalControl=False`, `lka_steering_long` is `False`, so this evaluates to `False` — **`LFAHDA_CLUSTER` would not be sent by us at all.**
-- The `"LFA"` (0x12A) message is only sent by us `if CP.openpilotLongitudinalControl` — also **not sent**, for lateral-only.
-- So in lateral-only mode with `lka_steering=True`, our own code shouldn't be writing to either message the original `LFA_ICON` finding relied on, meaning that finding may be genuine rather than circular after all.
+**Answer from the recognized passive run (`00000004--925bf85ead`):**
 
-**This has been reasoned out twice now from static code reading alone, and reversed once already — it needs to be confirmed with the branch actually running on the car before it's trusted as a safety trigger.** Concretely: after flashing (see deployment steps), watch `LFAHDA_CLUSTER` and `CCNC_0x161` on the bus *without ever pressing engage* and confirm neither one is being written by the device (values keep changing/matching real button presses even though our process is running) before wiring anything to them.
+- We never transmit 0x1E0, 0x12A (`LFA`) or 0xCB (`LFA_ALT`). `sendcan` only carried `LKAS_ALT` (0x110) and `CAM_0x362` (0x362) on bus 0 (A-CAN), from t=15.6 s when the panda entered `hyundaiCanfd` safety mode, plus one-shot diagnostic queries. So `LFA_ICON` is **not** circular with our code.
+- But `LFA_ICON` **never moved** in this route. Both 0x1E0 and 0x161 were byte-for-byte constant for all 86 s, despite 4 on/off LFA cycles (8 button presses).
+- The button itself was found in the **camera's own** `LKAS_ALT` (0x110) message on bus 2: signal `LFA_BUTTON` (bit 56, 1 bit, already in `hyundai_canfd.dbc`) pulsed to 1 for ~30 ms at t = 36.2, 40.1, 43.9, 47.4, 51.2, 55.0, 58.5, 62.0 s — 8 pulses, ~3.7 s apart, matching the presses.
+- Why the icon stayed off: in `hyundaiCanfd` mode with `CANFD_LKA_STEER_MSG_ALT`, the panda **blocks** the camera's 0x110 from being forwarded bus 2 → bus 0 (bus-0 receptions of 0x110 stop at t=15.6 s exactly) and openpilot sends its own 0x110 with `LFA_BUTTON = 0`. The ADRV never sees the press, so it never toggles `LFA_ICON`.
+- Cross-check on the unrecognized button-press route (`00000008`, panda in `elm327` passthrough, camera 0x110 forwarded untouched): `LFA_BUTTON` pulsed at 87.16, 92.16, 96.68, 102.12, 228.81, 232.45 s and `LFA_ICON` in 0x1E0 toggled ~180 ms after each (87.34, 92.34, 96.83, 102.29, 228.97, 232.62). Causal chain: button → camera `LKAS_ALT.LFA_BUTTON` → forwarded to ADRV → `LFA_ICON`.
+
+**Conclusion:** `LFA_ICON` was a real car signal, but it is *downstream of a message we intercept*, so it is dead whenever openpilot is running. Do not use it. The correct button source is **`LKAS_ALT.LFA_BUTTON` read from the camera bus (bus 2 / `CAN.CAM`)**. We never transmit on that bus, so there is no circularity, and it is unaffected by whatever we put in our own 0x110.
+
+## What blocked engagement on the recognized run (must be fixed before any engagement test)
+
+The car was recognized and openpilot never engaged (as intended: `selfdriveState.enabled` false on all 7618 frames, MADS disabled/unavailable, `cruiseState.enabled` never true, panda `controlsAllowed` false throughout). But it also *could not* have engaged, for two independent reasons:
+
+### A. openpilot side: `carState.canValid` was False on every frame → permanent `canError` ("Unknown Vehicle Variant") from t=16.5 s
+
+Replaying the route's CAN through the car's own parsers (`Bus.pt` on bus 1, `Bus.cam` on bus 2) gives five failing messages:
+
+| Message | Addr | Failure | Notes |
+|---|---|---|---|
+| `DOORS_SEATBELTS` | 0x411 | never appears on any bus | LX3 equivalent unknown |
+| `BLINKERS` | 0x413 | never appears on any bus | LX3 equivalent unknown; blinkers were used in route `00000008` |
+| `HOD_FD_01_100ms` | 0x2AF | never appears on any bus | hands-on-detection; LX3 equivalent unknown |
+| `GEAR_SHIFTER` | 0x130 | received, checksum OK, **counter +2 per frame** | 4242 frames in 86.6 s ≈ 49 Hz; `MAX_BAD_COUNTER` hit immediately |
+| `ACCELERATOR_BRAKE_ALT` | 0x100 | received, checksum OK, **counter +2 per frame** | same 49 Hz / +2 pattern |
+
+`GEAR_ALT` 0x40 shows the identical 49 Hz / +2 pattern (not currently parsed because 0x130 is present). `ACCELERATOR_ALT` 0x105 has a constant counter. Everything else parsed (`WHEEL_SPEEDS`, `STEERING_SENSORS`, `MDPS`, `IMU_01_10ms`, `TCS`, `SCC_CONTROL`, `CRUISE_BUTTONS_ALT`, `ADAS_CMD_50_50ms`, `FR_CMR_02_100ms`, `CAM_0x362`) was valid with good counters and checksums. The +2 pattern looks like the LX3 gateway relaying nominally 100 Hz messages at half rate; the DBC checksum still verifies, so the frames are genuine.
+
+Note also: bus 0 and bus 2 carry a *different* 0x100 (24 bytes) than bus 1 (32 bytes). Only the bus-1 one is `ACCELERATOR_BRAKE_ALT`.
+
+### B. panda side: `safetyRxChecksInvalid` True on 698 of 700 `hyundaiCanfd` frames → `controlsMismatch`, and `controls_allowed` forced false
+
+`opendbc/safety/modes/hyundai_canfd.h`, LKA-steering branch (`hyundai_canfd_lka_steer_msg && !longitudinal`), uses `HYUNDAI_CANFD_STD_BUTTONS_RX_CHECKS(1)` unconditionally — the comment literally says "Does not use the alt buttons message". That requires `CRUISE_BUTTONS` **0x1CF** on bus 1, which this car never emits (confirmed across every route). The common checks also require either `0x35` or `0x100` with a +1 counter; 0x35 is absent and 0x100 steps by 2, so that check fails too. Either failure alone keeps `controls_allowed` false. **Not yet changed — panda safety work is deliberately deferred.**
+
+### Also confirmed on this run
+
+- `STEERING_SENSORS` 0x125: continuous, 100 Hz, valid; full-lock sweep +510.6° (t=68.6) / −509.9° (t=74.8), mirrored in `carState.steeringAngleDeg`.
+- No panda faults, no relay malfunction. Alerts were only `startupMaster` and the permanent `canError`; events `canError`, `controlsMismatch`, `locationdTemporaryError` (side effect of invalid carState).
+- Benign log noise: "car doesn't match any Neural Network model", iso-tp bad responses during the FW query, athenad websocket exceptions.
 
 ## Open issue 2 — resolved
 
