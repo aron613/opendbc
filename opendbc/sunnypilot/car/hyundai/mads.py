@@ -106,3 +106,10 @@ class MadsCarState(MadsCarStateBase):
     if not self.CP.openpilotLongitudinalControl:
       cp_cruise_info = cp_cam if self.CP.flags & HyundaiFlags.CANFD_CAMERA_SCC else cp
       ret.cruiseState.available = cp_cruise_info.vl["SCC_CONTROL"]["MainMode_ACC"] == 1
+
+    # On CAN-FD angle-steering cars whose camera emits LKAS_ALT, the LFA button is carried in the camera's
+    # own LKAS_ALT message. openpilot replaces that message on A-CAN, so the button never reaches the
+    # ADAS ECU and the cluster's LFA_ICON stays off; read it straight from the camera bus instead.
+    if self.CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING and self.CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG_ALT:
+      self.prev_lkas_button = self.lkas_button
+      self.lkas_button = cp_cam.vl["LKAS_ALT"]["LFA_BUTTON"]

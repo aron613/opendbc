@@ -119,6 +119,28 @@ Note also: bus 0 and bus 2 carry a *different* 0x100 (24 bytes) than bus 1 (32 b
 
 `opendbc/safety/modes/hyundai_canfd.h`, LKA-steering branch (`hyundai_canfd_lka_steer_msg && !longitudinal`), uses `HYUNDAI_CANFD_STD_BUTTONS_RX_CHECKS(1)` unconditionally — the comment literally says "Does not use the alt buttons message". That requires `CRUISE_BUTTONS` **0x1CF** on bus 1, which this car never emits (confirmed across every route). The common checks also require either `0x35` or `0x100` with a +1 counter; 0x35 is absent and 0x100 steps by 2, so that check fails too. Either failure alone keeps `controls_allowed` false. **Not yet changed — panda safety work is deliberately deferred.**
 
+### Fix status (openpilot side) — implemented, not yet driven
+
+Implemented on this branch (opendbc), verified only by replaying the two routes above through
+`CarInterface` with `carParams` rebuilt via `get_params` (`canValid` holds for the whole route once
+fingerprinting finishes; the panda-side blocker below is untouched):
+
+| Need | Where it lives on LX3 | How it was verified |
+|---|---|---|
+| Driver seatbelt | `SEATBELTS_ALT` 0x3E0 (24 B, ~5 Hz, E-CAN), `DRIVER_SEATBELT` bit 24, 1 = latched | Route `00000008`: bit was 1 the whole drive and dropped to 0 at t=387.5 s, 0.2 s after the shift to P at the end. Route `00000004` (parked test): 0 throughout. |
+| Driver door | `DOORS_ALT` 0x3E2 (16 B, ~5 Hz, E-CAN), `DRIVER_DOOR` bit 64 | **Not verified** — no door-open event in either route; position taken from a third-party LX3 HEV DBC. Byte 9 bits 2/4/6 + byte 10 bit 0 all cleared at t=130.67 s right after the shift out of P (auto door lock), so those look like lock states, not door-open. |
+| Blinkers | `BLINKERS_ALT` 0x3E3 (16 B, ~5 Hz + event frames, E-CAN). Left: lamp bit 90, active bit 93. Right: lamp bit 92, active bit 95. Each side is a 2-bit field (on = lamp bit, off = the bit below it); byte 12 bit 1 = any indicator active. | Route `00000008`: lamp bits flash at 1.25 Hz inside constant "active" envelopes. Left/right assignment from steering direction: all 3 left bursts sit at positive (left) angles (e.g. +239° mean leaving the parking spot), all 5 right bursts at negative angles (down to −330°). Matches the third-party DBC. |
+| Hands-on detection | **Not found.** 0x2AF does not exist on this car. 0x3D4 byte 5 (0x90/0x60) only follows driver *torque* direction (non-zero in 19 % of high-torque samples, 1.6 % otherwise), so it is not a capacitive hands-on signal. | `hands_on_steering_grip` is not read on this platform; it is unused elsewhere anyway. `steeringPressed` comes from MDPS torque and works (16 transitions during the parked sweep). |
+| Gear / accelerator counters | `GEAR_SHIFTER` 0x130 and `ACCELERATOR_BRAKE_ALT` 0x100 arrive at ~49 Hz with COUNTER +2 per frame (4238 of 4241 deltas). `GEAR_ALT` 0x40 same pattern; `ACCELERATOR_ALT` 0x105 counter is constant. | New `HyundaiFlags.CANFD_HALF_RATE_COUNTERS` → `CANParser.set_counter_step(msg, 2)` for the gear and accelerator messages. Replay of `00000008` decodes P→R→N→D→N→R→P, brake before the shift to R, gas pulses while driving. |
+| LFA / MADS button | `LKAS_ALT` 0x110 on the **camera bus** (bus 2), `LFA_BUTTON` bit 56, ~30 ms pulse per press | `mads.py` reads it for `CANFD_ANGLE_STEERING + CANFD_LKA_STEER_MSG_ALT` cars and `carstate.py` emits `ButtonType.lkas` press/release. Replay: 8/8 presses on `00000004` (t=36.2 … 62.1), 6/6 on `00000008`. |
+
+Flags added: `HyundaiFlags.CANFD_ALT_BODY_MSGS` (0x3E0/0x3E2/0x3E3 instead of 0x411/0x413, no 0x2AF) and
+`HyundaiFlags.CANFD_HALF_RATE_COUNTERS`; both set statically on `HYUNDAI_PALISADE_LX3`.
+
+Still open after this: the panda RX checks (below), and the cruise buttons themselves (RES/SET/CANCEL/main/gap)
+which are still not decoded anywhere — `pcmCruise` engagement relies on `SCC_CONTROL.ACCMode` from the car, so
+lateral-only should not need them, but the panda's LKA-steer path insists on 0x1CF.
+
 ### Also confirmed on this run
 
 - `STEERING_SENSORS` 0x125: continuous, 100 Hz, valid; full-lock sweep +510.6° (t=68.6) / −509.9° (t=74.8), mirrored in `carState.steeringAngleDeg`.

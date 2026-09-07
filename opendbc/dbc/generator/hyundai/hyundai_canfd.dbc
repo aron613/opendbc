@@ -723,6 +723,18 @@ BO_ 1043 BLINKERS: 8 XXX
  SG_ RIGHT_LAMP_ALT : 61|1@0+ (1,0) [0|1] "" XXX
  SG_ USE_ALT_LAMP : 62|1@0+ (1,0) [0|1] "" XXX
 
+BO_ 992 SEATBELTS_ALT: 24 XXX
+ SG_ DRIVER_SEATBELT : 24|1@1+ (1,0) [0|1] "" XXX
+
+BO_ 994 DOORS_ALT: 16 XXX
+ SG_ DRIVER_DOOR : 64|1@1+ (1,0) [0|1] "" XXX
+
+BO_ 995 BLINKERS_ALT: 16 XXX
+ SG_ LEFT_LAMP : 90|1@1+ (1,0) [0|1] "" XXX
+ SG_ RIGHT_LAMP : 92|1@1+ (1,0) [0|1] "" XXX
+ SG_ LEFT_ACTIVE : 93|1@1+ (1,0) [0|1] "" XXX
+ SG_ RIGHT_ACTIVE : 95|1@1+ (1,0) [0|1] "" XXX
+
 BO_ 1144 DRIVE_MODE: 8 XXX
  SG_ DRIVE_MODE : 0|16@1+ (1,-61611) [0|61611] "" XXX
  SG_ DRIVE_MODE2 : 28|3@1+ (1,0) [1|3] "" XXX
@@ -816,6 +828,9 @@ CM_ SG_ 234 MDPS_TpaCanfltSta "This Signal should be used by only TPA. This sign
 CM_ SG_ 234 MDPS_TpaModeSta "This signal indicates the status of the TPA steering function.";
 CM_ SG_ 234 MDPS_TpaStrAnglVal "This value is used to inform TPA of a compensated steering wheel angle by MDPS. The signal is signed 16bits. (PH) = (HEX) * 0.1 (for 0 < HEX <= 32767) or = (HEX - 65536) * 0.1 (for HEX > 32767) [Deg]";
 CM_ BO_ 272 "Alternative LKAS message, used on cars such as 2023 Ioniq 6, 2nd gen Kona. Matches LKAS except size is 32 bytes";
+CM_ BO_ 992 "Body message on the 2026 Palisade (LX3) generation, replaces DOORS_SEATBELTS (0x411) which is absent. ~5 Hz on E-CAN. DRIVER_SEATBELT verified from logs (1 = latched, 0 = unlatched).";
+CM_ BO_ 994 "Body message on the 2026 Palisade (LX3) generation, replaces DOORS_SEATBELTS (0x411) which is absent. ~5 Hz on E-CAN. DRIVER_DOOR position taken from a third-party LX3 HEV DBC and NOT yet verified from logs (no door-open event recorded). Byte 9 bits 2/4/6 and byte 10 bit 0 appear to be per-door lock states (all cleared when shifting out of P).";
+CM_ BO_ 995 "Body message on the 2026 Palisade (LX3) generation, replaces BLINKERS (0x413) which is absent. ~5 Hz on E-CAN, extra frames on change. Lamps flash at 1.25 Hz; each side is a 2-bit field (on = *_LAMP bit, off = bit below it) with a constant *_ACTIVE envelope while the stalk is engaged. Left/right assignment verified from steering direction on route 69fb86b6677ce882/00000008.";
 CM_ SG_ 272 ToiFltSta "This fault flag is set when a fault in the LKA system has been detected by the LKA ECU such that LKA can no longer function. CAN failures, internal video ECU failures, hard-wired component (e.g. master switch) failures and other system logic failures are";
 CM_ SG_ 272 ADAS_StrAnglReqVal "(LKAS) ADAS Steering Angle Request Value; Capped at 176.7; tracks MDPS->STEERING_ANGLE when not engaged, not STEERING_SENSORS->STEERING_ANGLE";
 CM_ SG_ 272 ADAS_ACIAnglTqRedcGainVal "(LKAS) ADAS AngleControlInterface Angle Torque Reduction Gain Value";

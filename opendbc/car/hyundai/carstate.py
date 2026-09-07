@@ -236,8 +236,12 @@ class CarState(CarStateBase, EsccCarStateBase, MadsCarState, CarStateExt):
 
     ret.brakePressed = cp.vl["TCS"]["DriverBraking"] == 1
 
-    ret.doorOpen = cp.vl["DOORS_SEATBELTS"]["DRIVER_DOOR"] == 1
-    ret.seatbeltUnlatched = cp.vl["DOORS_SEATBELTS"]["DRIVER_SEATBELT"] == 0
+    if self.CP.flags & HyundaiFlags.CANFD_ALT_BODY_MSGS:
+      ret.doorOpen = cp.vl["DOORS_ALT"]["DRIVER_DOOR"] == 1
+      ret.seatbeltUnlatched = cp.vl["SEATBELTS_ALT"]["DRIVER_SEATBELT"] == 0
+    else:
+      ret.doorOpen = cp.vl["DOORS_SEATBELTS"]["DRIVER_DOOR"] == 1
+      ret.seatbeltUnlatched = cp.vl["DOORS_SEATBELTS"]["DRIVER_SEATBELT"] == 0
 
     gear = cp.vl[self.gear_msg_canfd]["GEAR"]
     ret.gearShifter = self.parse_gear_shifter(self.shifter_values.get(gear))
@@ -259,19 +263,25 @@ class CarState(CarStateBase, EsccCarStateBase, MadsCarState, CarStateExt):
     ret.steerFaultTemporary = cp.vl["MDPS"]["MDPS_LkaFailSta"] != 0
     if self.is_canfd_angle_steering:
       ret.steerFaultTemporary = ret.steerFaultTemporary or cp.vl["MDPS"]["MDPS_ADAS_AciFltSig_Lv2"] != 0
-      self.hands_on_steering_grip = cp.vl["HOD_FD_01_100ms"]["HOD_Dir_Status"]
+      if not self.CP.flags & HyundaiFlags.CANFD_ALT_BODY_MSGS:
+        # no HOD_FD_01_100ms on the LX3 generation; no hands-on-detection message found yet
+        self.hands_on_steering_grip = cp.vl["HOD_FD_01_100ms"]["HOD_Dir_Status"]
       torque_overriding = abs(ret.steeringTorque) > self.params.STEER_THRESHOLD
       ret.steeringPressed = self.update_steering_pressed(torque_overriding, 5)
       self.imu_lateral_acceleration = cp.vl["IMU_01_10ms"]["IMU_LatAccelVal"] * 9.81  # m/s^2
     else:
       ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > self.params.STEER_THRESHOLD, 5)
 
-    # TODO: alt signal usage may be described by cp.vl['BLINKERS']['USE_ALT_LAMP']
-    left_blinker_sig, right_blinker_sig = "LEFT_LAMP", "RIGHT_LAMP"
-    if self.CP.carFingerprint == CAR.HYUNDAI_KONA_EV_2ND_GEN or self.is_canfd_angle_steering:
-      left_blinker_sig, right_blinker_sig = "LEFT_LAMP_ALT", "RIGHT_LAMP_ALT"
-    ret.leftBlinker, ret.rightBlinker = self.update_blinker_from_lamp(50, cp.vl["BLINKERS"][left_blinker_sig],
-                                                                      cp.vl["BLINKERS"][right_blinker_sig])
+    if self.CP.flags & HyundaiFlags.CANFD_ALT_BODY_MSGS:
+      ret.leftBlinker, ret.rightBlinker = self.update_blinker_from_lamp(50, cp.vl["BLINKERS_ALT"]["LEFT_LAMP"],
+                                                                        cp.vl["BLINKERS_ALT"]["RIGHT_LAMP"])
+    else:
+      # TODO: alt signal usage may be described by cp.vl['BLINKERS']['USE_ALT_LAMP']
+      left_blinker_sig, right_blinker_sig = "LEFT_LAMP", "RIGHT_LAMP"
+      if self.CP.carFingerprint == CAR.HYUNDAI_KONA_EV_2ND_GEN or self.is_canfd_angle_steering:
+        left_blinker_sig, right_blinker_sig = "LEFT_LAMP_ALT", "RIGHT_LAMP_ALT"
+      ret.leftBlinker, ret.rightBlinker = self.update_blinker_from_lamp(50, cp.vl["BLINKERS"][left_blinker_sig],
+                                                                        cp.vl["BLINKERS"][right_blinker_sig])
     if self.CP.enableBsm:
       ret.leftBlindspot = bool(cp.vl["ADAS_CMD_50_50ms"]["BCW_LtIndSta"])
       ret.rightBlindspot = bool(cp.vl["ADAS_CMD_50_50ms"]["BCW_RtIndSta"])
@@ -314,7 +324,8 @@ class CarState(CarStateBase, EsccCarStateBase, MadsCarState, CarStateExt):
 
     ret.buttonEvents = [*create_button_events(self.cruise_buttons[-1], prev_cruise_buttons, BUTTONS_DICT),
                         *create_button_events(self.main_buttons[-1], prev_main_buttons, {1: ButtonType.mainCruise}),
-                        *create_button_events(self.lda_button, prev_lda_button, {1: ButtonType.lkas})]
+                        *create_button_events(self.lda_button, prev_lda_button, {1: ButtonType.lkas}),
+                        *create_button_events(self.lkas_button, self.prev_lkas_button, {1: ButtonType.lkas})]
 
     if self.CP.openpilotLongitudinalControl:
       ret.cruiseState.available = self.get_main_cruise(ret)
@@ -333,8 +344,14 @@ class CarState(CarStateBase, EsccCarStateBase, MadsCarState, CarStateExt):
         # this message is 50Hz but the ECU frequently stops transmitting for ~0.5s
         ("CRUISE_BUTTONS", 1)
       ]
+    pt = CANParser(DBC[CP.carFingerprint][Bus.pt], msgs, CanBus(CP).ECAN)
+    if CP.flags & HyundaiFlags.CANFD_HALF_RATE_COUNTERS:
+      # these nominally-100 Hz messages are relayed at ~50 Hz with the counter advancing by 2 per frame
+      for msg in (self.gear_msg_canfd, self.accelerator_msg_canfd):
+        pt.set_counter_step(msg, 2)
+
     return {
-      Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], msgs, CanBus(CP).ECAN),
+      Bus.pt: pt,
       Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus(CP).CAM),
     }
 

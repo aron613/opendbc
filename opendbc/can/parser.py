@@ -42,6 +42,7 @@ class MessageState:
   timestamps: deque[int] = field(default_factory=lambda: deque(maxlen=500))
   counter: int = 0
   counter_fail: int = 0
+  counter_step: int = 1  # expected counter increment per frame (some gateways relay at half rate, i.e. +2)
   first_seen_nanos: int = 0
   last_warning_log_nanos: int = 0
 
@@ -97,7 +98,7 @@ class MessageState:
     return True
 
   def update_counter(self, cur_count: int, cnt_size: int) -> bool:
-    if ((self.counter + 1) & ((1 << cnt_size) - 1)) != cur_count:
+    if ((self.counter + self.counter_step) & ((1 << cnt_size) - 1)) != cur_count:
       self.counter_fail = min(self.counter_fail + 1, MAX_BAD_COUNTER)
     elif self.counter_fail > 0:
       self.counter_fail -= 1
@@ -186,6 +187,18 @@ class CANParser:
     state.timeout_threshold = (1_000_000_000 / freq) * 10
 
     self.message_states[msg.address] = state
+
+  def set_counter_step(self, name_or_addr: str | int, step: int) -> None:
+    """Expect the message's COUNTER to advance by `step` per received frame instead of 1."""
+    if isinstance(name_or_addr, numbers.Number):
+      msg = self.dbc.addr_to_msg.get(int(name_or_addr))
+    else:
+      msg = self.dbc.name_to_msg.get(name_or_addr)
+    if msg is None:
+      raise RuntimeError(f"could not find message {name_or_addr!r} in DBC {self.dbc_name}")
+    if msg.address not in self.addresses:
+      self._add_message(name_or_addr)
+    self.message_states[msg.address].counter_step = step
 
   @property
   def bus_timeout(self) -> bool:

@@ -172,6 +172,14 @@ class HyundaiFlags(IntFlag):
 
   CANFD_ANGLE_STEERING = 2 ** 27
 
+  # 2026 Palisade (LX3) generation body messages: DOORS_SEATBELTS (0x411), BLINKERS (0x413) and
+  # HOD_FD_01_100ms (0x2AF) are absent; doors/seatbelt/blinkers live on 0x3E2/0x3E0/0x3E3 instead
+  CANFD_ALT_BODY_MSGS = 2 ** 28
+
+  # GEAR_SHIFTER (0x130), ACCELERATOR_BRAKE_ALT (0x100) and GEAR_ALT (0x40) arrive at ~50 Hz with the
+  # COUNTER advancing by 2 per frame (gateway relays them at half rate); checksums are still valid
+  CANFD_HALF_RATE_COUNTERS = 2 ** 29
+
 
 @dataclass
 class HyundaiCarDocs(CarDocs):
@@ -422,12 +430,13 @@ class CAR(Platforms):
     # wheelbase: 116.9 in -> m (Hyundai-quoted, all trims)
     # steerRatio: 14.3:1 overall ratio (Hyundai-quoted, all trims)
     CarSpecs(mass=4872 * CV.LB_TO_KG, wheelbase=2.97, steerRatio=14.3),
-    # CANFD_ALT_BUTTONS: confirmed from route 69fb86b6677ce882/00000003--94eb544029 (full rlog, all
-    # segments) -- standard CRUISE_BUTTONS (0x1CF, 8 bytes) never appears on any bus, while
-    # CRUISE_BUTTONS_ALT (0x1AA, 16 bytes) is present continuously on bus 1. Note: this only confirms
-    # the message/address the car uses; the specific button-press bits were not observed changing in
-    # that recording, so the exact bit layout is unverified pending a drive with deliberate button presses.
-    flags=HyundaiFlags.CANFD_ANGLE_STEERING | HyundaiFlags.CANFD_ALT_BUTTONS,
+    # CANFD_ALT_BUTTONS: standard CRUISE_BUTTONS (0x1CF) never appears on any bus, CRUISE_BUTTONS_ALT
+    # (0x1AA) is present continuously on E-CAN. Its button bits never move on this car though; the LFA
+    # button is LKAS_ALT.LFA_BUTTON on the camera bus (see mads.py). Cruise buttons are still unresolved.
+    # CANFD_ALT_BODY_MSGS / CANFD_HALF_RATE_COUNTERS: see LX3_FINDINGS.md, verified on routes
+    # 69fb86b6677ce882/00000004--925bf85ead and 69fb86b6677ce882/00000008--c7bfd877d8.
+    flags=HyundaiFlags.CANFD_ANGLE_STEERING | HyundaiFlags.CANFD_ALT_BUTTONS |
+          HyundaiFlags.CANFD_ALT_BODY_MSGS | HyundaiFlags.CANFD_HALF_RATE_COUNTERS,
   )
   HYUNDAI_VELOSTER = HyundaiPlatformConfig(
     [HyundaiCarDocs("Hyundai Veloster 2019-20", min_enable_speed=5. * CV.MPH_TO_MS, car_parts=CarParts.common([CarHarness.hyundai_e]))],
