@@ -14,6 +14,8 @@ class HyundaiSafetyFlagsSP:
   LONG_MAIN_CRUISE_TOGGLEABLE = 2
   HAS_LDA_BUTTON = 4
   NON_SCC = 8
+  # bits 4-7 carry the angle steering model id (see below)
+  CANFD_HALF_RATE_COUNTERS = 256  # ACCELERATOR_BRAKE_ALT (0x100) counter advances by 2 per frame (2026 Palisade LX3)
 
 
 # Angle steering vehicle model IDs — encoded in safety_param_sp bits [4:7].
@@ -34,6 +36,7 @@ class HyundaiAngleSteeringModel:
   KIA_SORENTO_HEV_4TH_LFA2 = 8
   GENESIS_GV70_E_2ND_GEN = 9
   HYUNDAI_AZERA_HEV_7TH = 10
+  HYUNDAI_PALISADE_LX3 = 11
 
 
 # Mapping from CAR platform name → angle steering model ID.
@@ -49,6 +52,7 @@ ANGLE_STEERING_MODEL_BY_CAR: dict[str, int] = {
   "KIA_SORENTO_HEV_4TH_GEN_LFA2":      HyundaiAngleSteeringModel.KIA_SORENTO_HEV_4TH_LFA2,
   "GENESIS_GV70_ELECTRIFIED_2ND_GEN":   HyundaiAngleSteeringModel.GENESIS_GV70_E_2ND_GEN,
   "HYUNDAI_AZERA_HEV_7TH_GEN":         HyundaiAngleSteeringModel.HYUNDAI_AZERA_HEV_7TH,
+  "HYUNDAI_PALISADE_LX3":               HyundaiAngleSteeringModel.HYUNDAI_PALISADE_LX3,
 }
 
 

@@ -151,7 +151,12 @@ static void update_addr_timestamp(RxCheck addr_list[], int index) {
 
 static void update_counter(RxCheck addr_list[], int index, uint8_t counter) {
   if (index != -1) {
-    uint8_t expected_counter = (addr_list[index].status.last_counter + 1U) % (addr_list[index].msg[addr_list[index].status.index].max_counter + 1U);
+    // counter_step is 0 for every existing message (meaning +1 per frame). A message can declare a larger fixed
+    // step when its source relays it at a reduced rate (e.g. every other frame, so the counter moves by 2).
+    // The check stays exact: only the declared step is accepted, so a stale or replayed frame is still rejected.
+    const uint8_t counter_step = addr_list[index].msg[addr_list[index].status.index].counter_step;
+    const uint8_t step = (counter_step == 0U) ? 1U : counter_step;
+    uint8_t expected_counter = (addr_list[index].status.last_counter + step) % (addr_list[index].msg[addr_list[index].status.index].max_counter + 1U);
     addr_list[index].status.wrong_counters += (expected_counter == counter) ? -1 : 1;
     addr_list[index].status.wrong_counters = SAFETY_CLAMP(addr_list[index].status.wrong_counters, 0, MAX_WRONG_COUNTERS);
     addr_list[index].status.last_counter = counter;

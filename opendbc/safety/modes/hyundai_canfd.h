@@ -42,6 +42,24 @@
   HYUNDAI_CANFD_COMMON_RX_CHECKS(pt_bus)                                                                                                         \
   {.msg = {{0x1aa, (pt_bus), 16, 50U, .ignore_checksum = true, .max_counter = 0xffU, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
 
+// 2026 Palisade (LX3, gas): the gateway relays ACCELERATOR_BRAKE_ALT (0x100) at ~50 Hz with COUNTER advancing by 2 per
+// frame (4238 of 4241 consecutive deltas were +2 on route 69fb86b6677ce882/00000004; checksums verify). The common
+// check above requires +1, so it never validates on this car. This variant keeps the same checksum, counter and
+// frequency checks but declares the observed step of 2 (still exact, no wider tolerance). Only 0x100 is listed:
+// ACCELERATOR (0x35) never appears on this car and ACCELERATOR_ALT (0x105) is present but its counter never moves,
+// so leaving 0x105 as an alternative would let get_addr_check_index lock onto it and fail permanently.
+// The remaining checks are identical to HYUNDAI_CANFD_COMMON_RX_CHECKS (TCS 0x175, WHEEL_SPEEDS 0xa0 and MDPS 0xea
+// all arrive with +1 counters on this car).
+#define HYUNDAI_CANFD_HALF_RATE_GAS_COMMON_RX_CHECKS(pt_bus)                                                                                   \
+  {.msg = {{0x100, (pt_bus), 32, 50U, .max_counter = 0xffU, .ignore_quality_flag = true, .counter_step = 2U}, { 0 }, { 0 }}},  \
+  {.msg = {{0x175, (pt_bus), 24, 50U, .max_counter = 0xffU, .ignore_quality_flag = true}, { 0 }, { 0 }}},                       \
+  {.msg = {{0xa0, (pt_bus), 24, 100U, .max_counter = 0xffU, .ignore_quality_flag = true}, { 0 }, { 0 }}},                       \
+  {.msg = {{0xea, (pt_bus), 24, 100U, .max_counter = 0xffU, .ignore_quality_flag = true}, { 0 }, { 0 }}},                       \
+
+#define HYUNDAI_CANFD_ALT_BUTTONS_HALF_RATE_GAS_RX_CHECKS(pt_bus)                                                                                \
+  HYUNDAI_CANFD_HALF_RATE_GAS_COMMON_RX_CHECKS(pt_bus)                                                                                           \
+  {.msg = {{0x1aa, (pt_bus), 16, 50U, .ignore_checksum = true, .max_counter = 0xffU, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
+
 // SCC_CONTROL (from ADAS unit or camera)
 #define HYUNDAI_CANFD_SCC_ADDR_CHECK(scc_bus)                                                                            \
   {.msg = {{0x1a0, (scc_bus), 32, 50U, .max_counter = 0xffU, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
@@ -315,6 +333,8 @@ static safety_config hyundai_canfd_init(uint16_t param) {
   hyundai_canfd_angle_model_id = hyundai_get_angle_model_id(current_safety_param_sp);
   // TODO: test this restriction
   hyundai_canfd_lka_steer_msg_alt = GET_FLAG(param, HYUNDAI_PARAM_CANFD_LKA_STEER_MSG_ALT);
+  // only consulted here when selecting the RX checks, so it stays block scoped
+  const bool hyundai_canfd_half_rate_counters = GET_FLAG(current_safety_param_sp, HYUNDAI_PARAM_SP_CANFD_HALF_RATE_COUNTERS);
 
   safety_config ret;
   if (hyundai_longitudinal) {
@@ -356,13 +376,35 @@ static safety_config hyundai_canfd_init(uint16_t param) {
     if (hyundai_canfd_lka_steer_msg) {
       // *** LKA steering checks ***
       // E-CAN is on bus 1, SCC messages are sent on cars with ADRV ECU.
-      // Does not use the alt buttons message
+      // Uses the standard buttons message unless the alt buttons flag is set
       static RxCheck hyundai_canfd_lka_steer_msg_rx_checks[] = {
         HYUNDAI_CANFD_STD_BUTTONS_RX_CHECKS(1)
         HYUNDAI_CANFD_SCC_ADDR_CHECK(1)
       };
 
-      SET_RX_CHECKS(hyundai_canfd_lka_steer_msg_rx_checks, ret);
+      // LKA steering with CRUISE_BUTTONS_ALT (0x1AA) instead of CRUISE_BUTTONS (0x1CF). The 2026 Palisade (LX3) is
+      // LKA steering (camera emits LKAS_ALT 0x110) but never transmits 0x1CF on any bus (checked across ~550 s of
+      // logs on routes 69fb86b6677ce882/00000003, /00000004 and /00000008), so the standard check above can never
+      // be satisfied and controls_allowed stays false. Same checks as the standard set, only the button address differs.
+      static RxCheck hyundai_canfd_lka_steer_msg_alt_buttons_rx_checks[] = {
+        HYUNDAI_CANFD_ALT_BUTTONS_RX_CHECKS(1)
+        HYUNDAI_CANFD_SCC_ADDR_CHECK(1)
+      };
+
+      // Same as above with the half-rate ACCELERATOR_BRAKE_ALT counter (see HYUNDAI_CANFD_HALF_RATE_GAS_COMMON_RX_CHECKS).
+      // Only offered together with alt buttons since the only car needing it (LX3) uses both.
+      static RxCheck hyundai_canfd_lka_steer_msg_alt_buttons_half_rate_rx_checks[] = {
+        HYUNDAI_CANFD_ALT_BUTTONS_HALF_RATE_GAS_RX_CHECKS(1)
+        HYUNDAI_CANFD_SCC_ADDR_CHECK(1)
+      };
+
+      if (hyundai_canfd_alt_buttons && hyundai_canfd_half_rate_counters) {
+        SET_RX_CHECKS(hyundai_canfd_lka_steer_msg_alt_buttons_half_rate_rx_checks, ret);
+      } else if (hyundai_canfd_alt_buttons) {
+        SET_RX_CHECKS(hyundai_canfd_lka_steer_msg_alt_buttons_rx_checks, ret);
+      } else {
+        SET_RX_CHECKS(hyundai_canfd_lka_steer_msg_rx_checks, ret);
+      }
       if (hyundai_canfd_lka_steer_msg_alt) {
         SET_TX_MSGS(HYUNDAI_CANFD_LKA_STEER_MSG_ALT_TX_MSGS, ret);
       } else {

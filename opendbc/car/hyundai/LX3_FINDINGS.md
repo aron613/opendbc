@@ -117,7 +117,14 @@ Note also: bus 0 and bus 2 carry a *different* 0x100 (24 bytes) than bus 1 (32 b
 
 ### B. panda side: `safetyRxChecksInvalid` True on 698 of 700 `hyundaiCanfd` frames → `controlsMismatch`, and `controls_allowed` forced false
 
-`opendbc/safety/modes/hyundai_canfd.h`, LKA-steering branch (`hyundai_canfd_lka_steer_msg && !longitudinal`), uses `HYUNDAI_CANFD_STD_BUTTONS_RX_CHECKS(1)` unconditionally — the comment literally says "Does not use the alt buttons message". That requires `CRUISE_BUTTONS` **0x1CF** on bus 1, which this car never emits (confirmed across every route). The common checks also require either `0x35` or `0x100` with a +1 counter; 0x35 is absent and 0x100 steps by 2, so that check fails too. Either failure alone keeps `controls_allowed` false. **Not yet changed — panda safety work is deliberately deferred.**
+`opendbc/safety/modes/hyundai_canfd.h`, LKA-steering branch (`hyundai_canfd_lka_steer_msg && !longitudinal`), used `HYUNDAI_CANFD_STD_BUTTONS_RX_CHECKS(1)` unconditionally — the comment literally said "Does not use the alt buttons message". That requires `CRUISE_BUTTONS` **0x1CF** on bus 1, which this car never emits (confirmed across every route). The common checks also require either `0x35` or `0x100` with a +1 counter; 0x35 is absent and 0x100 steps by 2, so that check fails too. Either failure alone keeps `controls_allowed` false.
+
+**Fixed on this branch (not yet driven):**
+
+- The LKA-steer branch now selects `HYUNDAI_CANFD_ALT_BUTTONS_RX_CHECKS(1)` (0x1AA instead of 0x1CF) when `CANFD_ALT_BUTTONS` is set. The 0x1CF variant is untouched for cars that use it.
+- A new generic `counter_step` field on `CanMsgCheck` (default 0 → +1, so every existing message is unchanged) lets a message declare a fixed counter increment. `HYUNDAI_CANFD_HALF_RATE_GAS_COMMON_RX_CHECKS` uses it to expect exactly +2 on 0x100 — checksum, counter and frequency checks all still apply; only 0x100 is listed (0x35 absent, 0x105 present but its counter never moves, so it must not be an alternative). Selected only when `CANFD_ALT_BUTTONS` **and** the new `HyundaiSafetyFlagsSP.CANFD_HALF_RATE_COUNTERS` (safety_param_sp bit 8) are set; `interface.py` sets that bit from `HyundaiFlags.CANFD_HALF_RATE_COUNTERS`.
+- `HYUNDAI_ANGLE_MODEL_HYUNDAI_PALISADE_LX3` (id 11) added with `slip_factor = -0.0005647415830223231`, `steer_ratio = 14.3`, `wheelbase = 2.97`, computed with `calc_slip_factor(VehicleModel(CP))` exactly like the existing entries. The ISO lateral accel/jerk limits are the shared ones in `steer_angle_cmd_checks_vm`; the entry only fixes the physics so they are enforced at this car's angle scale. `test_lateral_jerk_limit` passes for `HYUNDAI_PALISADE_LX3` with it.
+- New safety tests: `TestHyundaiCanfdLKASteeringAltAngleAltButtons` (0x1AA satisfies the checks, 0x1CF no longer does, +2 gas counter still rejected without the flag) and `TestHyundaiCanfdLKASteeringAltAngleHalfRateCounters` (+2 accepted, +1 and repeated frames rejected, flag without alt buttons falls back to the standard checks).
 
 ### Fix status (openpilot side) — implemented, not yet driven
 
@@ -137,9 +144,11 @@ fingerprinting finishes; the panda-side blocker below is untouched):
 Flags added: `HyundaiFlags.CANFD_ALT_BODY_MSGS` (0x3E0/0x3E2/0x3E3 instead of 0x411/0x413, no 0x2AF) and
 `HyundaiFlags.CANFD_HALF_RATE_COUNTERS`; both set statically on `HYUNDAI_PALISADE_LX3`.
 
-Still open after this: the panda RX checks (below), and the cruise buttons themselves (RES/SET/CANCEL/main/gap)
+Still open after this: the cruise buttons themselves (RES/SET/CANCEL/main/gap)
 which are still not decoded anywhere — `pcmCruise` engagement relies on `SCC_CONTROL.ACCMode` from the car, so
-lateral-only should not need them, but the panda's LKA-steer path insists on 0x1CF.
+lateral-only should not need them. Note the panda still requires a recent RES/SET/CANCEL/main press *in 0x1AA* before
+it honors a cruise-engaged rising edge (`hyundai_common_cruise_state_check`), and those bits never move on this car, so
+stock-cruise engagement will not enable openpilot until the real button bits are found. MADS (LFA button) is unaffected.
 
 ### Also confirmed on this run
 

@@ -183,6 +183,7 @@ typedef struct {
   const uint8_t max_counter;         // maximum value of the counter. 0 means that the counter check is skipped
   const bool ignore_quality_flag;    // true if quality flag check is skipped
   const bool ignore_frequency_check; // true if minimum frequency enforcement is skipped
+  const uint8_t counter_step;        // expected counter increment between consecutive frames. 0 (default) means 1
 } CanMsgCheck;
 
 typedef struct {

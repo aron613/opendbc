@@ -22,6 +22,8 @@ enum {
   HYUNDAI_PARAM_SP_LONGITUDINAL_MAIN_CRUISE_TOGGLEABLE = 2,
   HYUNDAI_PARAM_SP_HAS_LDA_BUTTON = 4,
   HYUNDAI_PARAM_SP_NON_SCC = 8,
+  // bits 4-7 carry the CAN-FD angle steering model id (hyundai_canfd_angle_models.h)
+  HYUNDAI_PARAM_SP_CANFD_HALF_RATE_COUNTERS = 256,  // ACCELERATOR_BRAKE_ALT (0x100) counter advances by 2 per frame (2026 Palisade LX3)
 };
 
 // common state

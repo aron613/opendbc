@@ -27,6 +27,7 @@ enum {
   HYUNDAI_ANGLE_MODEL_KIA_SORENTO_HEV_4TH_LFA2, // 8
   HYUNDAI_ANGLE_MODEL_GENESIS_GV70_E_2ND_GEN,    // 9
   HYUNDAI_ANGLE_MODEL_HYUNDAI_AZERA_HEV_7TH,     // 10
+  HYUNDAI_ANGLE_MODEL_HYUNDAI_PALISADE_LX3,      // 11
 
   HYUNDAI_ANGLE_MODEL_COUNT,  // must be last — used for bounds checking
 };
@@ -126,6 +127,18 @@ static const AngleSteeringParams *hyundai_get_angle_params(uint8_t model_id) {
       .slip_factor = -0.0005793721359940619,
       .steer_ratio = 13.5,
       .wheelbase = 2.895,
+    },
+
+    // [11] HYUNDAI_PALISADE_LX3 — mass=2210 (4872 lb curb), wb=2.97, sr=14.3 (values.py CarSpecs)
+    // slip_factor = calc_slip_factor(VehicleModel(CP)) with the std tire stiffness/centerToFront defaults, computed
+    // the same way as the other entries (cross-checked: recomputing [1], [4] and [7] reproduces the values above).
+    // The lateral accel/jerk limits themselves are the shared ISO limits applied in steer_angle_cmd_checks_vm;
+    // this entry only supplies the vehicle physics so the panda enforces them at the LX3's own angle scale
+    // instead of the Sportage baseline.
+    [HYUNDAI_ANGLE_MODEL_HYUNDAI_PALISADE_LX3] = {
+      .slip_factor = -0.0005647415830223231,
+      .steer_ratio = 14.3,
+      .wheelbase = 2.97,
     },
   };
   // const AngleSteeringParams *result_model;

@@ -5,7 +5,7 @@ import numpy as np
 
 from opendbc.car.hyundai.carcontroller import ANGLE_SAFETY_BASELINE_MODEL
 from opendbc.car.hyundai.values import HyundaiSafetyFlags, CAR, HyundaiFlags, CarControllerParams
-from opendbc.sunnypilot.car.hyundai.values import ANGLE_STEERING_MODEL_BY_CAR, encode_angle_model_id
+from opendbc.sunnypilot.car.hyundai.values import ANGLE_STEERING_MODEL_BY_CAR, encode_angle_model_id, HyundaiSafetyFlagsSP
 from opendbc.car.structs import CarParams
 from opendbc.car.vehicle_model import VehicleModel, calc_slip_factor
 from opendbc.safety.tests.libsafety import libsafety_py
@@ -597,6 +597,141 @@ class TestHyundaiCanfdLKASteeringAltAngle(TestHyundaiCanfdAngleSteering):
 
   def test_realtime_limits(self):
     pass
+
+
+class TestHyundaiCanfdLKASteeringAltAngleAltButtons(TestHyundaiCanfdLKASteeringAltAngle):
+  """
+    LKA steering (LKAS_ALT) + angle steering + CRUISE_BUTTONS_ALT (0x1AA) on E-CAN, e.g. 2026 Palisade (LX3).
+    The RX checks must be satisfied by 0x1AA and not by 0x1CF.
+  """
+
+  SAFETY_PARAM_SP = 0
+  MAX_WRONG_COUNTERS = common.MAX_WRONG_COUNTERS
+
+  def setUp(self):
+    self.packer = CANPackerSafety("hyundai_canfd_generated")
+    self.safety = libsafety_py.libsafety
+    self.safety.set_current_safety_param_sp(self.SAFETY_PARAM_SP)
+    self.safety.set_safety_hooks(CarParams.SafetyModel.hyundaiCanfd, HyundaiSafetyFlags.CANFD_LKA_STEER_MSG |
+                                 HyundaiSafetyFlags.CANFD_LKA_STEER_MSG_ALT | HyundaiSafetyFlags.CANFD_ANGLE_STEERING |
+                                 HyundaiSafetyFlags.CANFD_ALT_BUTTONS)
+    self.safety.init_tests()
+
+  def _button_msg(self, buttons, main_button=0, bus=None):
+    values = {
+      "CRUISE_BUTTONS": buttons,
+      "ADAPTIVE_CRUISE_MAIN_BTN": main_button,
+    }
+    return self.packer.make_can_msg_safety("CRUISE_BUTTONS_ALT", self.PT_BUS, values)
+
+  def _std_button_msg(self, buttons, main_button=0):
+    values = {
+      "CRUISE_BUTTONS": buttons,
+      "ADAPTIVE_CRUISE_MAIN_BTN": main_button,
+    }
+    return self.packer.make_can_msg_safety("CRUISE_BUTTONS", self.PT_BUS, values)
+
+  def _lkas_button_msg(self, enabled):
+    values = {"LDA_BTN": enabled}
+    return self.packer.make_can_msg_safety("CRUISE_BUTTONS_ALT", self.PT_BUS, values)
+
+  def _std_gas_msg(self, gas):
+    """ACCELERATOR_BRAKE_ALT with the packer's default +1 counter"""
+    values = {self.GAS_MSG[1]: gas}
+    return self.packer.make_can_msg_safety(self.GAS_MSG[0], self.PT_BUS, values)
+
+  def _rx_checked_msgs(self, button_msg=None, gas_msg=None):
+    """Receive every RX-checked message once (all with valid checksums and counters unless overridden)."""
+    button_msg = button_msg or self._button_msg
+    gas_msg = gas_msg or self._user_gas_msg
+    self._rx(gas_msg(0))
+    self._rx(self._user_brake_msg(0))
+    self._rx(self._speed_msg(0))
+    self._rx(self._torque_driver_msg(0))
+    self._rx(button_msg(0))
+    self._rx(self._pcm_status_msg(False))
+
+  def test_button_sends(self):
+    """
+      No button send allowed with alt buttons.
+    """
+    for enabled in (True, False):
+      for btn in range(8):
+        self.safety.set_controls_allowed(enabled)
+        self.assertFalse(self._tx(self._button_msg(btn)))
+
+  def test_rx_checks_satisfied_by_alt_buttons(self):
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx_checked_msgs()
+    self.assertTrue(self.safety.safety_config_valid())
+
+  def test_rx_checks_not_satisfied_by_std_buttons(self):
+    # 0x1CF is not the checked button message on this configuration, so 0x1AA must be seen
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx_checked_msgs(button_msg=self._std_button_msg)
+    self.assertFalse(self.safety.safety_config_valid())
+
+  def test_gas_counter_step(self):
+    # without the half-rate flag, a +2 counter on ACCELERATOR_BRAKE_ALT must still be rejected
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx_checked_msgs()
+    self.assertTrue(self.safety.safety_config_valid())
+
+    self.safety.set_controls_allowed(True)
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self.packer.make_can_msg_safety(self.GAS_MSG[0], self.PT_BUS, {})  # skip a counter value -> +2
+      self._rx(self._std_gas_msg(0))
+    self.assertFalse(self.safety.safety_config_valid())
+    self.assertFalse(self.safety.get_controls_allowed())
+
+
+class TestHyundaiCanfdLKASteeringAltAngleHalfRateCounters(TestHyundaiCanfdLKASteeringAltAngleAltButtons):
+  """
+    2026 Palisade (LX3): as above, plus the gateway relays ACCELERATOR_BRAKE_ALT (0x100) at half rate so its
+    counter advances by 2 per received frame. The check stays exact at +2: +1 frames are rejected.
+  """
+
+  SAFETY_PARAM_SP = HyundaiSafetyFlagsSP.CANFD_HALF_RATE_COUNTERS
+
+  def _user_gas_msg(self, gas):
+    # the car only delivers every other frame: burn one packer counter value so the counter moves by 2
+    self.packer.make_can_msg_safety(self.GAS_MSG[0], self.PT_BUS, {})
+    return self._std_gas_msg(gas)
+
+  def test_gas_counter_step(self):
+    # +2 accepted
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx_checked_msgs()
+    self.assertTrue(self.safety.safety_config_valid())
+
+    # +1 (the packer default) rejected, and controls drop out
+    self.safety.set_controls_allowed(True)
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx(self._std_gas_msg(0))
+    self.assertFalse(self.safety.safety_config_valid())
+    self.assertFalse(self.safety.get_controls_allowed())
+
+    # repeated frame (counter +0) rejected as well
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx_checked_msgs()
+    self.assertTrue(self.safety.safety_config_valid())
+    self.safety.set_controls_allowed(True)
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx(self.packer.make_can_msg_safety(self.GAS_MSG[0], self.PT_BUS, {"COUNTER": 7}))
+    self.assertFalse(self.safety.safety_config_valid())
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_half_rate_flag_not_applied_without_alt_buttons(self):
+    # the half-rate variant is only wired up together with alt buttons; alone it must fall back to the standard checks
+    self.safety.set_safety_hooks(CarParams.SafetyModel.hyundaiCanfd, HyundaiSafetyFlags.CANFD_LKA_STEER_MSG |
+                                 HyundaiSafetyFlags.CANFD_LKA_STEER_MSG_ALT | HyundaiSafetyFlags.CANFD_ANGLE_STEERING)
+    self.safety.init_tests()
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx_checked_msgs(button_msg=self._std_button_msg, gas_msg=self._std_gas_msg)
+    self.assertTrue(self.safety.safety_config_valid())
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx_checked_msgs(button_msg=self._std_button_msg)  # +2 gas counter
+    self.assertFalse(self.safety.safety_config_valid())
 
 
 class TestHyundaiCanfdLKASteeringLongEV(HyundaiLongitudinalBase, TestHyundaiCanfdLKASteeringEV):

@@ -228,6 +228,10 @@ class CarInterface(CarInterfaceBase):
       angle_model_id = ANGLE_STEERING_MODEL_BY_CAR.get(candidate, 0)
       ret.safetyParam |= encode_angle_model_id(angle_model_id)
 
+    # panda expects the +2 ACCELERATOR_BRAKE_ALT counter on these cars (see hyundai_canfd.h)
+    if stock_cp.flags & HyundaiFlags.CANFD_HALF_RATE_COUNTERS:
+      ret.safetyParam |= HyundaiSafetyFlagsSP.CANFD_HALF_RATE_COUNTERS
+
     return ret
 
   @staticmethod
