@@ -1,18 +1,45 @@
 # Palisade LX3 (2026, gas, HDA II/LFA2) — porting findings
 
 Owner's vehicle: 2026 Hyundai Palisade Calligraphy, gas (non-hybrid), LX3 platform, HDA2, CAN-FD, comma 3X.
-Harness: comma Hyundai N with the CAN H/L pairs manually swapped from stock pinout ("verified working" per owner, but see **Open issue 2** below — this has not been re-validated against what this code actually expects).
+Harness: comma Hyundai N with the CAN H/L pairs manually swapped from stock pinout. **Confirmed correct** — see "Bus mapping" below. Keep the flip.
 
 Routes referenced:
 - Before pin flip: `69fb86b6677ce882/00000000--3284f58264/0`
 - After pin flip: `69fb86b6677ce882/00000003--94eb544029` (3 segments)
 - Deliberate button-press test: `69fb86b6677ce882/00000008--c7bfd877d8` (7 segments)
+- Reference (known-working, same `hyundai_n` harness, not the owner's car): `KIA_SPORTAGE_HEV_2026` test route `1635e7fee82dec3b/00000000--aa7efe7199`
 
 ## Bus layout (from the owner's own captured logs, after the pin flip)
 
 - Bus 1: powertrain/steering (`STEERING_SENSORS` 0x125, `LFA_ALT` 0xCB, `SCC_CONTROL` 0x1A0, `CRUISE_BUTTONS_ALT` 0x1AA, `LFAHDA_CLUSTER` 0x1E0, `CCNC_0x161` 0x161 — everything of interest lives here)
 - Bus 0: camera/radar
 - Bus 2: mirror of bus 0
+
+## Bus mapping — resolved
+
+Bus roles for CAN-FD cars are **not** fixed by our static `values.py` flags. `interface.py` auto-detects them per-vehicle from the fingerprint:
+
+```python
+cam_can = CanBus(None, fingerprint).CAM                          # bus 2, single panda
+lka_steering = 0x50 in fingerprint[cam_can] or 0x110 in fingerprint[cam_can]
+CAN = CanBus(None, fingerprint, lka_steering)
+```
+
+If `0x50`/`0x110` show up on the camera's own transmit bus (bus 2), `lka_steering` is detected `True` and the code assigns powertrain (`ECAN`) = bus 1, camera (`ACAN`) = bus 0. Otherwise `ECAN` = bus 0, `ACAN` = bus 1. This is independent of the `CANFD_ANGLE_STEERING` flag we set — a car can be (and Sportage HEV 2026 is) both `lka_steering=True` *and* angle-steering at the same time.
+
+Checked all three routes for `0x110` (0x50 never appears in any of them):
+
+| | bus 0 | bus 1 | bus 2 | 0x110 seen on |
+|---|---|---|---|---|
+| Owner, before flip | 215 IDs (steering/cruise) | 86 IDs (camera/radar) | 29 msgs (nearly dead) | bus 1 |
+| Owner, after flip | 87 IDs (camera/radar) | 222 IDs (powertrain) | 150 IDs | bus 0 **and** bus 2 |
+| Sportage HEV 2026 reference | 86 IDs | 235 IDs | 148 IDs | bus 0 **and** bus 2 |
+
+The owner's after-flip topology (87 / 222 / 150) closely matches the known-working reference (86 / 235 / 148) — same shape, and the same 0x110-on-bus-0-and-2 signature that drives `lka_steering=True` → `ECAN=1`, which is exactly where the owner's powertrain data actually is. The before-flip topology doesn't resemble the reference at all, and its near-dead bus 2 (29 messages vs. ~150 on a healthy one) indicates that connection was genuinely mis-wired, not merely cross-labeled.
+
+**Verdict: keep the flip. No code-side bus override is needed** — the existing fingerprint-based auto-detection already resolves to the correct bus for this wiring.
+
+**Side effect worth knowing:** because `lka_steering` auto-detects `True` for this car, it will *also* pick up `HyundaiFlags.CANFD_LKA_STEER_MSG` at runtime (dynamically — not something set in `values.py`). For lateral-only operation (`openpilotLongitudinalControl=False`), this means `carcontroller.py` sends steering as `"LKAS"`/`"LKAS_ALT"` (not `"LFA"`), and does **not** send the `"LFA"` (0x12A) or `LFAHDA_CLUSTER` (0x1E0) messages at all — see the revised Open issue 1 below.
 
 ## Fingerprint
 
@@ -43,26 +70,17 @@ Platform code `LX3` confirmed in ECU firmware (radar `0x7d0`, camera `0x7c4`). N
 
 **`LFAHDA_CLUSTER` (0x1E0/480) `LFA_ICON`** (bit 47, 2 bits) and **`CCNC_0x161` (0x161/353) `LFA_ICON`** (bit 224, 4 bits) both toggled 0↔1 at the *identical* timestamps, matching the owner's described LFA on/off/on/off sequence (4 transitions while parked, one more pair while driving). `LFA_ICON == 0` corresponds to LFA off.
 
-## Open issue 1 (critical, blocks using LFA_ICON as a safety signal going forward)
+## Open issue 1 (still open — needs on-car verification, not yet a safety wiring decision)
 
-`carcontroller.py` **unconditionally transmits both of these exact messages once this car is recognized**:
-- `create_steering_messages` sends the whole `"LFA"` message (0x12A) every frame for angle-steering cars (our flag config) — it never sets `LFA_BUTTON`, so that field defaults to 0 regardless of the real button. (Separately, this is *not* the same message as `LFAHDA_CLUSTER`/0x1E0 — the two carry different signals.)
-- `create_lfahda_cluster` sends `LFAHDA_CLUSTER` (0x1E0) every 5 frames, with `LFA_ICON` computed purely from `CC.enabled`/MADS internal state (`opendbc/sunnypilot/car/hyundai/mads.py`), **not read from any physical button**.
+Earlier analysis (before the bus mapping was resolved) assumed `carcontroller.py` unconditionally transmits both `LFAHDA_CLUSTER` (0x1E0) and the `"LFA"` message (0x12A) once this car is recognized, which would make reading `LFA_ICON` back circular (we'd just be reading what `mads.py` computed from `CC.enabled`, not the real button).
 
-This means the clean 4-toggle `LFA_ICON` pattern found in the test route is trustworthy *only because that route was almost certainly recorded while the car was still unrecognized* (fingerprint reported "MOCK" prior to this session's fixes, so this custom `CarController` was never running and the real ADAS ECU was still broadcasting `LFAHDA_CLUSTER` on its own). **Once this branch is actually flashed and the car is recognized, openpilot itself becomes the writer of `LFAHDA_CLUSTER`, and reading it back would be circular** — it would only ever equal what `mads.py` already computed, telling us nothing about the real steering-wheel button.
+Now that bus mapping is resolved, this looks less likely to be a problem for a **lateral-only** setup:
+- `create_lfahda_cluster` is only called `if not lka_steering or lka_steering_long`. With `lka_steering=True` (confirmed above) and `openpilotLongitudinalControl=False`, `lka_steering_long` is `False`, so this evaluates to `False` — **`LFAHDA_CLUSTER` would not be sent by us at all.**
+- The `"LFA"` (0x12A) message is only sent by us `if CP.openpilotLongitudinalControl` — also **not sent**, for lateral-only.
+- So in lateral-only mode with `lka_steering=True`, our own code shouldn't be writing to either message the original `LFA_ICON` finding relied on, meaning that finding may be genuine rather than circular after all.
 
-`CCNC_0x161` is never written anywhere in this codebase, so it remains a candidate for a genuinely independent signal — but only if it is confirmed to be a real, separate ECU broadcast rather than a downstream relay of the same `LFAHDA_CLUSTER` content we'll be spoofing on the same physical bus once our code is active. That has not been verified and can't be verified from logs captured before our code ever ran.
+**This has been reasoned out twice now from static code reading alone, and reversed once already — it needs to be confirmed with the branch actually running on the car before it's trusted as a safety trigger.** Concretely: after flashing (see deployment steps), watch `LFAHDA_CLUSTER` and `CCNC_0x161` on the bus *without ever pressing engage* and confirm neither one is being written by the device (values keep changing/matching real button presses even though our process is running) before wiring anything to them.
 
-**Before wiring anything to `LFA_ICON` as a "stop steering" safety trigger, this branch needs to be flashed and driven, and the button-press test repeated, to see whether `CCNC_0x161`'s `LFA_ICON` still tracks the real button independently of `LFAHDA_CLUSTER`'s openpilot-driven value, or whether it just mirrors it.**
+## Open issue 2 — resolved
 
-## Open issue 2 (critical, likely blocks the car working at all as currently configured)
-
-`hyundaicanfd.CanBus` assigns bus roles for non-`CANFD_LKA_STEER_MSG` cars (our flag config) as: `ECAN` (powertrain, read by `carstate.py`'s `Bus.pt` parser) = **bus 0**, `ACAN` (camera) = **bus 1**.
-
-But the owner's own confirmed physical mapping (bus 1 = powertrain, bus 0 = camera/radar) is the **exact opposite**. As currently configured, `carstate.py`'s `Bus.pt` parser would be listening on physical bus 0 — camera/radar traffic — and would never see `STEERING_SENSORS`, `SCC_CONTROL`, `CRUISE_BUTTONS_ALT`, or any other powertrain signal at all.
-
-This needs to be resolved before any carstate signal (including the LFA check) can be trusted to read real data on-car. Two possibilities, not yet distinguished:
-1. The manual pin flip was unnecessary or wrong for this generation, and stock (un-flipped) N-harness wiring would put powertrain on bus 0 as the code expects (matching every other car using this same code path).
-2. The flip is correct/needed for this specific vehicle, and the code needs an explicit bus-role override for this platform (independent of the `CANFD_LKA_STEER_MSG` steering-format flag, since those are conceptually different things that happen to share one flag/parameter today).
-
-Not fixed yet — needs a decision (see the harness note in `values.py` for the raw bus mapping, and this file for why it needs to be reconciled with `CanBus`'s ECAN/ACAN assignment before trusting any carstate signal on-car).
+Bus mapping is no longer an open issue. See "Bus mapping — resolved" above: the flip is correct, matches the reference car's topology, and needs no code change.
