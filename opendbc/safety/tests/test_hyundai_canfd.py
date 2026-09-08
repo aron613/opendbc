@@ -11,7 +11,7 @@ from opendbc.car.vehicle_model import VehicleModel, calc_slip_factor
 from opendbc.safety.tests.libsafety import libsafety_py
 import opendbc.safety.tests.common as common
 from opendbc.safety.tests.common import CANPackerSafety, away_round, round_speed
-from opendbc.safety.tests.hyundai_common import HyundaiButtonBase, HyundaiLongitudinalBase
+from opendbc.safety.tests.hyundai_common import HyundaiButtonBase, HyundaiLongitudinalBase, Buttons, PREV_BUTTON_SAMPLES
 from opendbc.car.lateral import get_max_angle_delta_vm, get_max_angle_vm, AngleSteeringLimitsVM
 from opendbc.car.hyundai.interface import CarInterface
 
@@ -732,6 +732,173 @@ class TestHyundaiCanfdLKASteeringAltAngleHalfRateCounters(TestHyundaiCanfdLKASte
     for _ in range(self.MAX_WRONG_COUNTERS + 1):
       self._rx_checked_msgs(button_msg=self._std_button_msg)  # +2 gas counter
     self.assertFalse(self.safety.safety_config_valid())
+
+
+class TestHyundaiCanfdLKASteeringAltAngleWheelButtons(TestHyundaiCanfdLKASteeringAltAngleHalfRateCounters):
+  """
+    2026 Palisade (LX3): as above, plus the buttons come from WHEEL_BUTTONS_ALT (0x10B, 25 Hz, checksum, +2 counter)
+    as a button-ID byte (RES 0x01, SET 0x02, main 0x08, LFA 0x80). The 0x1AA button fields are ignored and 0x1AA
+    stays RX-checked for liveness only. The 0x03 code (RES and SET bits together) is not mapped to any button.
+  """
+
+  SAFETY_PARAM_SP = HyundaiSafetyFlagsSP.CANFD_HALF_RATE_COUNTERS | HyundaiSafetyFlagsSP.CANFD_ALT_WHEEL_BUTTONS
+
+  def _wheel_buttons_msg(self, values):
+    # the car steps the counter by 2: burn one packer counter value per frame
+    self.packer.make_can_msg_safety("WHEEL_BUTTONS_ALT", self.PT_BUS, {})
+    return self.packer.make_can_msg_safety("WHEEL_BUTTONS_ALT", self.PT_BUS, values)
+
+  def _button_msg(self, buttons, main_button=0, bus=None):
+    # only RES, SET and main have a known code; anything else (incl. CANCEL) has none and is sent as no button
+    values = {
+      "RES_ACCEL_BTN": 1 if buttons == Buttons.RESUME else 0,
+      "SET_DECEL_BTN": 1 if buttons == Buttons.SET else 0,
+      "MAIN_BTN": main_button,
+    }
+    return self._wheel_buttons_msg(values)
+
+  def _alt_buttons_msg(self, buttons, main_button=0, lda_button=0):
+    """CRUISE_BUTTONS_ALT (0x1AA), whose button fields are dead on this car"""
+    values = {
+      "CRUISE_BUTTONS": buttons,
+      "ADAPTIVE_CRUISE_MAIN_BTN": main_button,
+      "LDA_BTN": lda_button,
+    }
+    return self.packer.make_can_msg_safety("CRUISE_BUTTONS_ALT", self.PT_BUS, values)
+
+  def _lkas_button_msg(self, enabled):
+    return self._wheel_buttons_msg({"LFA_BTN": enabled})
+
+  def _rx_checked_msgs(self, button_msg=None, gas_msg=None, alt_buttons=True, wheel_buttons=True):
+    button_msg = button_msg or self._button_msg
+    gas_msg = gas_msg or self._user_gas_msg
+    self._rx(gas_msg(0))
+    self._rx(self._user_brake_msg(0))
+    self._rx(self._speed_msg(0))
+    self._rx(self._torque_driver_msg(0))
+    if alt_buttons:
+      self._rx(self._alt_buttons_msg(0))
+    if wheel_buttons:
+      self._rx(button_msg(0))
+    self._rx(self._pcm_status_msg(False))
+
+  def _reset_buttons(self):
+    for _ in range(PREV_BUTTON_SAMPLES):
+      self._rx(self._button_msg(Buttons.NONE))
+
+  def test_enable_control_allowed_from_cruise(self):
+    # on this car only RES, SET and main are decodable; every other code must not count as a recent press
+    for main_button in (0, 1):
+      for btn in range(8):
+        self._reset_buttons()
+        self._rx(self._pcm_status_msg(False))
+        self.assertFalse(self.safety.get_controls_allowed())
+        self._rx(self._button_msg(btn, main_button=main_button))
+        self._rx(self._pcm_status_msg(True))
+        controls_allowed = btn in (Buttons.RESUME, Buttons.SET) or bool(main_button)
+        self.assertEqual(controls_allowed, self.safety.get_controls_allowed(), (btn, main_button))
+
+  def test_gap_or_cancel_code_ignored(self):
+    # 0x03 (RES and SET bits together) is unidentified and must not enable
+    self._reset_buttons()
+    self._rx(self._pcm_status_msg(False))
+    self._rx(self._wheel_buttons_msg({"RES_ACCEL_BTN": 1, "SET_DECEL_BTN": 1}))
+    self._rx(self._pcm_status_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_alt_buttons_fields_ignored(self):
+    # button fields in 0x1AA are dead on this car and must not count as a press or as the MADS button
+    self._reset_buttons()
+    self._rx(self._pcm_status_msg(False))
+    self._rx(self._alt_buttons_msg(Buttons.SET, main_button=1, lda_button=1))
+    self._rx(self._pcm_status_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.assertEqual(self.safety.get_mads_button_press(), 0)
+    self._rx(self._lkas_button_msg(True))
+    self.assertEqual(self.safety.get_mads_button_press(), 1)
+    self._rx(self._alt_buttons_msg(0, lda_button=1))
+    self.assertEqual(self.safety.get_mads_button_press(), 1)
+
+  def test_rx_checks_require_both_button_msgs(self):
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx_checked_msgs()
+    self.assertTrue(self.safety.safety_config_valid())
+
+    # 0x10B must be present (setUp re-installs the hooks, which clears the per-message "seen" state)
+    self.setUp()
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx_checked_msgs(wheel_buttons=False)
+    self.assertFalse(self.safety.safety_config_valid())
+
+    # 0x1AA still must be present (nothing removed)
+    self.setUp()
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx_checked_msgs(alt_buttons=False)
+    self.assertFalse(self.safety.safety_config_valid())
+
+  def test_wheel_buttons_counter_step(self):
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx_checked_msgs()
+    self.assertTrue(self.safety.safety_config_valid())
+
+    # +1 counter (packer default) rejected and controls drop out
+    self.safety.set_controls_allowed(True)
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx(self.packer.make_can_msg_safety("WHEEL_BUTTONS_ALT", self.PT_BUS, {}))
+    self.assertFalse(self.safety.safety_config_valid())
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_wheel_buttons_checksum(self):
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx_checked_msgs()
+    self.assertTrue(self.safety.safety_config_valid())
+
+    self.safety.set_controls_allowed(True)
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      msg = self._wheel_buttons_msg({"RES_ACCEL_BTN": 1})
+      msg.data[10] = 0  # corrupt the payload after the checksum was computed
+      self._rx(msg)
+    self.assertFalse(self.safety.safety_config_valid())
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_wheel_buttons_real_frames(self):
+    # consecutive WHEEL_BUTTONS_ALT frames as logged from the car (route 69fb86b6677ce882/00000008--c7bfd877d8, LFA
+    # press at t=142.76 s): the panda must accept the car's own checksum and +2 counter, and see the LFA bit
+    real_frames = [
+      "a5c7f400000000000000002000000000",
+      "4d7af600000000000000802000000000",
+      "73abf800000000000000802000000000",
+      "1aebfa00000000000000802000000000",
+    ]
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx_checked_msgs()
+    self.assertTrue(self.safety.safety_config_valid())
+    self.safety.set_mads_button_press(-1)
+    for i, frame in enumerate(real_frames):
+      self.assertTrue(self._rx(common.make_msg(self.PT_BUS, 0x10b, 16, bytes.fromhex(frame))))
+      self.assertEqual(self.safety.get_mads_button_press(), 0 if i == 0 else 1)
+    self.assertTrue(self.safety.safety_config_valid())
+
+  def test_wheel_buttons_flag_requires_alt_buttons_and_half_rate(self):
+    # without the half-rate flag the wheel-buttons set is not installed: 0x10B is neither required nor read,
+    # and 0x1AA is decoded as on any other alt-buttons car
+    self.safety.set_current_safety_param_sp(HyundaiSafetyFlagsSP.CANFD_ALT_WHEEL_BUTTONS)
+    self.safety.set_safety_hooks(CarParams.SafetyModel.hyundaiCanfd, HyundaiSafetyFlags.CANFD_LKA_STEER_MSG |
+                                 HyundaiSafetyFlags.CANFD_LKA_STEER_MSG_ALT | HyundaiSafetyFlags.CANFD_ANGLE_STEERING |
+                                 HyundaiSafetyFlags.CANFD_ALT_BUTTONS)
+    self.safety.init_tests()
+    for _ in range(self.MAX_WRONG_COUNTERS + 1):
+      self._rx_checked_msgs(gas_msg=self._std_gas_msg, wheel_buttons=False)
+    self.assertTrue(self.safety.safety_config_valid())
+
+    self._rx(self._pcm_status_msg(False))
+    self._rx(self._button_msg(Buttons.SET))  # 0x10B: not read in this configuration
+    self._rx(self._pcm_status_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed())
+    self._rx(self._pcm_status_msg(False))
+    self._rx(self._alt_buttons_msg(Buttons.SET))
+    self._rx(self._pcm_status_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed())
 
 
 class TestHyundaiCanfdLKASteeringLongEV(HyundaiLongitudinalBase, TestHyundaiCanfdLKASteeringEV):

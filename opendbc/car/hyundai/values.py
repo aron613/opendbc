@@ -180,6 +180,10 @@ class HyundaiFlags(IntFlag):
   # COUNTER advancing by 2 per frame (gateway relays them at half rate); checksums are still valid
   CANFD_HALF_RATE_COUNTERS = 2 ** 29
 
+  # Steering-wheel buttons live in WHEEL_BUTTONS_ALT (0x10B, 25 Hz, COUNTER +2) as a button-ID byte instead of the
+  # CRUISE_BUTTONS_ALT (0x1AA) fields, which never move on these cars. LFA, RES, SET and main are decoded from it.
+  CANFD_ALT_WHEEL_BUTTONS = 2 ** 30
+
 
 @dataclass
 class HyundaiCarDocs(CarDocs):
@@ -433,10 +437,10 @@ class CAR(Platforms):
     # CANFD_ALT_BUTTONS: standard CRUISE_BUTTONS (0x1CF) never appears on any bus, CRUISE_BUTTONS_ALT
     # (0x1AA) is present continuously on E-CAN. Its button bits never move on this car though; the LFA
     # button is LKAS_ALT.LFA_BUTTON on the camera bus (see mads.py). Cruise buttons are still unresolved.
-    # CANFD_ALT_BODY_MSGS / CANFD_HALF_RATE_COUNTERS: see LX3_FINDINGS.md, verified on routes
-    # 69fb86b6677ce882/00000004--925bf85ead and 69fb86b6677ce882/00000008--c7bfd877d8.
+    # CANFD_ALT_BODY_MSGS / CANFD_HALF_RATE_COUNTERS / CANFD_ALT_WHEEL_BUTTONS: see LX3_FINDINGS.md, verified on routes
+    # 69fb86b6677ce882/00000004--925bf85ead, 69fb86b6677ce882/00000008--c7bfd877d8 and 69fb86b6677ce882/00000008--89dc7fcd9c.
     flags=HyundaiFlags.CANFD_ANGLE_STEERING | HyundaiFlags.CANFD_ALT_BUTTONS |
-          HyundaiFlags.CANFD_ALT_BODY_MSGS | HyundaiFlags.CANFD_HALF_RATE_COUNTERS,
+          HyundaiFlags.CANFD_ALT_BODY_MSGS | HyundaiFlags.CANFD_HALF_RATE_COUNTERS | HyundaiFlags.CANFD_ALT_WHEEL_BUTTONS,
   )
   HYUNDAI_VELOSTER = HyundaiPlatformConfig(
     [HyundaiCarDocs("Hyundai Veloster 2019-20", min_enable_speed=5. * CV.MPH_TO_MS, car_parts=CarParts.common([CarHarness.hyundai_e]))],

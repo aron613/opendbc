@@ -24,6 +24,7 @@ enum {
   HYUNDAI_PARAM_SP_NON_SCC = 8,
   // bits 4-7 carry the CAN-FD angle steering model id (hyundai_canfd_angle_models.h)
   HYUNDAI_PARAM_SP_CANFD_HALF_RATE_COUNTERS = 256,  // ACCELERATOR_BRAKE_ALT (0x100) counter advances by 2 per frame (2026 Palisade LX3)
+  HYUNDAI_PARAM_SP_CANFD_ALT_WHEEL_BUTTONS = 512,   // LFA/RES/SET/main buttons come from WHEEL_BUTTONS_ALT (0x10B) instead of 0x1AA (2026 Palisade LX3)
 };
 
 // common state
@@ -169,7 +170,12 @@ uint32_t hyundai_common_canfd_compute_checksum(const CANPacket_t *msg) {
   crc = (crc << 8U) ^ hyundai_canfd_crc_lut[(crc >> 8U) ^ ((address >> 0U) & 0xFFU)];
   crc = (crc << 8U) ^ hyundai_canfd_crc_lut[(crc >> 8U) ^ ((address >> 8U) & 0xFFU)];
 
-  if (len == 24) {
+  if (len == 16) {
+    // 16-byte frames were never checksum-checked before WHEEL_BUTTONS_ALT (0x10B, 2026 Palisade LX3): every 16-byte
+    // entry in the RX checks has ignore_checksum. This is the same final XOR opendbc's hkg_can_fd_checksum applies for
+    // this length; with it the checksum matches 501/501 logged 0x10B frames (route 69fb86b6677ce882/00000008--c7bfd877d8).
+    crc ^= 0x041dU;
+  } else if (len == 24) {
     crc ^= 0x819dU;
   } else if (len == 32) {
     crc ^= 0x9f5bU;

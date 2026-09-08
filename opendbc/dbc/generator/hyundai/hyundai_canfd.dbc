@@ -412,6 +412,14 @@ BO_ 416 SCC_CONTROL: 32 ADRV
  SG_ ZEROS_2 : 207|5@0+ (1,0) [0|63] "" XXX
  SG_ ZEROS : 215|48@0+ (1,0) [0|281474976710655] "" XXX
 
+BO_ 267 WHEEL_BUTTONS_ALT: 16 XXX
+ SG_ CHECKSUM : 0|16@1+ (1,0) [0|65535] "" XXX
+ SG_ COUNTER : 16|8@1+ (1,0) [0|255] "" XXX
+ SG_ RES_ACCEL_BTN : 80|1@1+ (1,0) [0|1] "" XXX
+ SG_ SET_DECEL_BTN : 81|1@1+ (1,0) [0|1] "" XXX
+ SG_ MAIN_BTN : 83|1@1+ (1,0) [0|1] "" XXX
+ SG_ LFA_BTN : 87|1@1+ (1,0) [0|1] "" XXX
+
 BO_ 426 CRUISE_BUTTONS_ALT: 16 XXX
  SG_ CHECKSUM : 0|16@1+ (1,0) [0|65535] "" XXX
  SG_ COUNTER : 16|8@1+ (1,0) [0|255] "" XXX
@@ -829,7 +837,8 @@ CM_ SG_ 234 MDPS_TpaModeSta "This signal indicates the status of the TPA steerin
 CM_ SG_ 234 MDPS_TpaStrAnglVal "This value is used to inform TPA of a compensated steering wheel angle by MDPS. The signal is signed 16bits. (PH) = (HEX) * 0.1 (for 0 < HEX <= 32767) or = (HEX - 65536) * 0.1 (for HEX > 32767) [Deg]";
 CM_ BO_ 272 "Alternative LKAS message, used on cars such as 2023 Ioniq 6, 2nd gen Kona. Matches LKAS except size is 32 bytes";
 CM_ BO_ 992 "Body message on the 2026 Palisade (LX3) generation, replaces DOORS_SEATBELTS (0x411) which is absent. ~5 Hz on E-CAN. DRIVER_SEATBELT verified from logs (1 = latched, 0 = unlatched).";
-CM_ BO_ 994 "Body message on the 2026 Palisade (LX3) generation, replaces DOORS_SEATBELTS (0x411) which is absent. ~5 Hz on E-CAN. DRIVER_DOOR position taken from a third-party LX3 HEV DBC and NOT yet verified from logs (no door-open event recorded). Byte 9 bits 2/4/6 and byte 10 bit 0 appear to be per-door lock states (all cleared when shifting out of P).";
+CM_ BO_ 267 "Steering-wheel ADAS buttons on the 2026 Palisade (LX3) generation. 25 Hz on E-CAN, HKG CAN-FD checksum (verified on 501/501 frames), COUNTER advances by 2 per frame. Byte 10 is a button-ID byte and the only payload byte that ever changes; the ID is held for ~0.2 s per press. Decoded from route 69fb86b6677ce882/00000008--c7bfd877d8 (panda in passthrough, so the cluster/SCC answered every press): 0x80 = LFA (LFA_ICON toggled after every pulse), 0x08 = cruise/main (SCC MainMode_ACC+ACCMode went 1, set speed 20), 0x01 = RES+ (set speed +1 per press), 0x02 = SET- (set speed -1 per press). 0x03 (bits 80 and 81 together) was seen 5x in Park with no cluster response and is gap-or-cancel pending a test in Drive; it is deliberately NOT mapped, readers must treat RES+SET together as no button. CRUISE_BUTTONS_ALT (0x1AA) button fields never move on this car.";
+CM_ BO_ 994 "Body message on the 2026 Palisade (LX3) generation, replaces DOORS_SEATBELTS (0x411) which is absent. ~5 Hz on E-CAN. DRIVER_DOOR bit 64 verified on route 69fb86b6677ce882/00000008--89dc7fcd9c: three driver-door open/close cycles at t=165, 169 and 178 s registered as doorOpen. Byte 9 bits 2/4/6 and byte 10 bit 0 appear to be per-door lock states (all cleared when shifting out of P).";
 CM_ BO_ 995 "Body message on the 2026 Palisade (LX3) generation, replaces BLINKERS (0x413) which is absent. ~5 Hz on E-CAN, extra frames on change. Lamps flash at 1.25 Hz; each side is a 2-bit field (on = *_LAMP bit, off = bit below it) with a constant *_ACTIVE envelope while the stalk is engaged. Left/right assignment verified from steering direction on route 69fb86b6677ce882/00000008.";
 CM_ SG_ 272 ToiFltSta "This fault flag is set when a fault in the LKA system has been detected by the LKA ECU such that LKA can no longer function. CAN failures, internal video ECU failures, hard-wired component (e.g. master switch) failures and other system logic failures are";
 CM_ SG_ 272 ADAS_StrAnglReqVal "(LKAS) ADAS Steering Angle Request Value; Capped at 176.7; tracks MDPS->STEERING_ANGLE when not engaged, not STEERING_SENSORS->STEERING_ANGLE";

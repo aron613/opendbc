@@ -107,9 +107,10 @@ class MadsCarState(MadsCarStateBase):
       cp_cruise_info = cp_cam if self.CP.flags & HyundaiFlags.CANFD_CAMERA_SCC else cp
       ret.cruiseState.available = cp_cruise_info.vl["SCC_CONTROL"]["MainMode_ACC"] == 1
 
-    # On CAN-FD angle-steering cars whose camera emits LKAS_ALT, the LFA button is carried in the camera's
-    # own LKAS_ALT message. openpilot replaces that message on A-CAN, so the button never reaches the
-    # ADAS ECU and the cluster's LFA_ICON stays off; read it straight from the camera bus instead.
-    if self.CP.flags & HyundaiFlags.CANFD_ANGLE_STEERING and self.CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG_ALT:
+    # 2026 Palisade (LX3): the LFA button is bit 87 of WHEEL_BUTTONS_ALT (0x10B) on E-CAN, held for ~0.2 s per press.
+    # It is the only button that sets that bit (6 pulses = 6 LFA presses, each followed by the car's own LFA_ICON toggle,
+    # on route 69fb86b6677ce882/00000008--c7bfd877d8). This replaces the camera-bus LKAS_ALT.LFA_BUTTON echo, which is
+    # ~20 ms later, unvalidated, and not something the panda can read for its own MADS button.
+    if self.CP.flags & HyundaiFlags.CANFD_ALT_WHEEL_BUTTONS:
       self.prev_lkas_button = self.lkas_button
-      self.lkas_button = cp_cam.vl["LKAS_ALT"]["LFA_BUTTON"]
+      self.lkas_button = cp.vl["WHEEL_BUTTONS_ALT"]["LFA_BTN"]

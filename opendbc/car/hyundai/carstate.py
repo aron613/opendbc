@@ -310,10 +310,22 @@ class CarState(CarStateBase, EsccCarStateBase, MadsCarState, CarStateExt):
     prev_cruise_buttons = self.cruise_buttons[-1]
     prev_main_buttons = self.main_buttons[-1]
     prev_lda_button = self.lda_button
-    self.cruise_buttons.extend(cp.vl_all[self.cruise_btns_msg_canfd]["CRUISE_BUTTONS"])
-    self.main_buttons.extend(cp.vl_all[self.cruise_btns_msg_canfd]["ADAPTIVE_CRUISE_MAIN_BTN"])
-    self.lda_button = cp.vl[self.cruise_btns_msg_canfd]["LDA_BTN"]
-    self.buttons_counter = cp.vl[self.cruise_btns_msg_canfd]["COUNTER"]
+    if self.CP.flags & HyundaiFlags.CANFD_ALT_WHEEL_BUTTONS:
+      # 2026 Palisade (LX3): the button fields of CRUISE_BUTTONS_ALT (0x1AA) never move. The wheel buttons are a
+      # button-ID byte in WHEEL_BUTTONS_ALT (0x10B, 25 Hz): RES+ and SET- stepped the cluster set speed and the
+      # main button engaged SCC on route 69fb86b6677ce882/00000008--c7bfd877d8. RES and SET together (0x03) is an
+      # unidentified button (gap or cancel) and is deliberately treated as no press until it is confirmed.
+      res_btns = cp.vl_all["WHEEL_BUTTONS_ALT"]["RES_ACCEL_BTN"]
+      set_btns = cp.vl_all["WHEEL_BUTTONS_ALT"]["SET_DECEL_BTN"]
+      self.cruise_buttons.extend(Buttons.RES_ACCEL if res and not set_ else Buttons.SET_DECEL if set_ and not res else Buttons.NONE
+                                 for res, set_ in zip(res_btns, set_btns, strict=True))
+      self.main_buttons.extend(cp.vl_all["WHEEL_BUTTONS_ALT"]["MAIN_BTN"])
+      self.buttons_counter = cp.vl["WHEEL_BUTTONS_ALT"]["COUNTER"]
+    else:
+      self.cruise_buttons.extend(cp.vl_all[self.cruise_btns_msg_canfd]["CRUISE_BUTTONS"])
+      self.main_buttons.extend(cp.vl_all[self.cruise_btns_msg_canfd]["ADAPTIVE_CRUISE_MAIN_BTN"])
+      self.lda_button = cp.vl[self.cruise_btns_msg_canfd]["LDA_BTN"]
+      self.buttons_counter = cp.vl[self.cruise_btns_msg_canfd]["COUNTER"]
     ret.accFaulted = cp.vl["TCS"]["ACCEnable"] != 0  # 0 ACC CONTROL ENABLED, 1-3 ACC CONTROL DISABLED
 
     if self.CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG:
@@ -349,6 +361,9 @@ class CarState(CarStateBase, EsccCarStateBase, MadsCarState, CarStateExt):
       # these nominally-100 Hz messages are relayed at ~50 Hz with the counter advancing by 2 per frame
       for msg in (self.gear_msg_canfd, self.accelerator_msg_canfd):
         pt.set_counter_step(msg, 2)
+    if CP.flags & HyundaiFlags.CANFD_ALT_WHEEL_BUTTONS:
+      # WHEEL_BUTTONS_ALT (0x10B) also steps its counter by 2 (5745 of 5747 deltas on route 69fb86b6677ce882/00000008--c7bfd877d8)
+      pt.set_counter_step("WHEEL_BUTTONS_ALT", 2)
 
     return {
       Bus.pt: pt,

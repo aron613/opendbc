@@ -60,6 +60,17 @@
   HYUNDAI_CANFD_HALF_RATE_GAS_COMMON_RX_CHECKS(pt_bus)                                                                                           \
   {.msg = {{0x1aa, (pt_bus), 16, 50U, .ignore_checksum = true, .max_counter = 0xffU, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
 
+// 2026 Palisade (LX3): the steering-wheel buttons are not in CRUISE_BUTTONS_ALT (0x1AA) at all. Its CRUISE_BUTTONS,
+// ADAPTIVE_CRUISE_MAIN_BTN and LDA_BTN fields never changed across every press of every button on route
+// 69fb86b6677ce882/00000008--c7bfd877d8, and never changed on routes /00000004 and /00000008--89dc7fcd9c either. The
+// buttons live in WHEEL_BUTTONS_ALT (0x10B, 16 bytes, 25 Hz on E-CAN) as a button-ID byte; see the rx hook for the
+// decode. 0x10B carries the standard HKG CAN-FD checksum (matches on 501/501 logged frames) and its counter steps by 2
+// per frame (5745 of 5747 deltas), so it is checked with checksum + exact +2 counter + frequency, which is strictly
+// more than 0x1AA gets (0x1AA has no checksum check). 0x1AA stays in the set unchanged as a liveness check.
+#define HYUNDAI_CANFD_ALT_WHEEL_BUTTONS_RX_CHECKS(pt_bus)                                                                                            \
+  HYUNDAI_CANFD_ALT_BUTTONS_HALF_RATE_GAS_RX_CHECKS(pt_bus)                                                                                          \
+  {.msg = {{0x10b, (pt_bus), 16, 25U, .max_counter = 0xffU, .ignore_quality_flag = true, .counter_step = 2U}, { 0 }, { 0 }}},  \
+
 // SCC_CONTROL (from ADAS unit or camera)
 #define HYUNDAI_CANFD_SCC_ADDR_CHECK(scc_bus)                                                                            \
   {.msg = {{0x1a0, (scc_bus), 32, 50U, .max_counter = 0xffU, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
@@ -67,6 +78,8 @@
 static bool hyundai_canfd_alt_buttons = false;
 static bool hyundai_canfd_angle_steering = false;
 static bool hyundai_canfd_lka_steer_msg_alt = false;
+// true only when the RX checks that validate WHEEL_BUTTONS_ALT (0x10B) were installed, see hyundai_canfd_init
+static bool hyundai_canfd_alt_wheel_buttons = false;
 static uint8_t hyundai_canfd_angle_model_id = HYUNDAI_ANGLE_MODEL_BASELINE;
 
 static unsigned int hyundai_canfd_get_lka_addr(void) {
@@ -107,7 +120,7 @@ static void hyundai_canfd_rx_hook(const CANPacket_t *msg) {
 
     // cruise buttons
     const unsigned int button_addr = hyundai_canfd_alt_buttons ? 0x1aaU : 0x1cfU;
-    if (msg->addr == button_addr) {
+    if ((msg->addr == button_addr) && !hyundai_canfd_alt_wheel_buttons) {
       bool main_button = false;
       int cruise_button = 0;
       if (msg->addr == 0x1cfU) {
@@ -119,6 +132,32 @@ static void hyundai_canfd_rx_hook(const CANPacket_t *msg) {
         main_button = GET_BIT(msg, 34U);
         mads_button_press = GET_BIT(msg, 39U) ? MADS_BUTTON_PRESSED : MADS_BUTTON_NOT_PRESSED;
       }
+      hyundai_common_cruise_buttons_check(cruise_button, main_button);
+    }
+
+    // 2026 Palisade (LX3): buttons are a button-ID byte (byte 10) in WHEEL_BUTTONS_ALT (0x10B). On route
+    // 69fb86b6677ce882/00000008--c7bfd877d8 (panda in passthrough, so the car answered every press):
+    //   0x01 (bit 80) stepped the cluster set speed up   -> RES
+    //   0x02 (bit 81) stepped the cluster set speed down -> SET
+    //   0x08 (bit 83) turned SCC MainMode_ACC + ACCMode on with set speed 20 -> main/cruise button
+    //   0x80 (bit 87) was followed by the car's own LFA_ICON toggle every time -> LFA (MADS button)
+    //   0x03 (bits 80+81 together) was pressed 5x in Park with no cluster response: gap or cancel, not yet
+    //        identified, so it is deliberately NOT treated as any button.
+    // When this flag is set the 0x1AA decode above is skipped: its button fields are always zero on this car, and
+    // letting both messages feed hyundai_common_cruise_buttons_check would shrink the recent-press window.
+    if (hyundai_canfd_alt_wheel_buttons && (msg->addr == 0x10bU)) {
+      const bool res_button = GET_BIT(msg, 80U);
+      const bool set_button = GET_BIT(msg, 81U);
+      int cruise_button = 0;
+      if (res_button && !set_button) {
+        cruise_button = HYUNDAI_BTN_RESUME;
+      } else if (set_button && !res_button) {
+        cruise_button = HYUNDAI_BTN_SET;
+      } else {
+        // neither, or the unidentified 0x03 code
+      }
+      const bool main_button = GET_BIT(msg, 83U);
+      mads_button_press = GET_BIT(msg, 87U) ? MADS_BUTTON_PRESSED : MADS_BUTTON_NOT_PRESSED;
       hyundai_common_cruise_buttons_check(cruise_button, main_button);
     }
 
@@ -335,6 +374,9 @@ static safety_config hyundai_canfd_init(uint16_t param) {
   hyundai_canfd_lka_steer_msg_alt = GET_FLAG(param, HYUNDAI_PARAM_CANFD_LKA_STEER_MSG_ALT);
   // only consulted here when selecting the RX checks, so it stays block scoped
   const bool hyundai_canfd_half_rate_counters = GET_FLAG(current_safety_param_sp, HYUNDAI_PARAM_SP_CANFD_HALF_RATE_COUNTERS);
+  const bool hyundai_canfd_alt_wheel_buttons_param = GET_FLAG(current_safety_param_sp, HYUNDAI_PARAM_SP_CANFD_ALT_WHEEL_BUTTONS);
+  // the rx hook may only read 0x10B once the RX checks below validate it; set true in exactly that branch
+  hyundai_canfd_alt_wheel_buttons = false;
 
   safety_config ret;
   if (hyundai_longitudinal) {
@@ -398,7 +440,17 @@ static safety_config hyundai_canfd_init(uint16_t param) {
         HYUNDAI_CANFD_SCC_ADDR_CHECK(1)
       };
 
-      if (hyundai_canfd_alt_buttons && hyundai_canfd_half_rate_counters) {
+      // Same as above plus WHEEL_BUTTONS_ALT (0x10B), the real button message on the LX3
+      // (see HYUNDAI_CANFD_ALT_WHEEL_BUTTONS_RX_CHECKS). Only offered on top of the two flags above.
+      static RxCheck hyundai_canfd_lka_steer_msg_alt_wheel_buttons_rx_checks[] = {
+        HYUNDAI_CANFD_ALT_WHEEL_BUTTONS_RX_CHECKS(1)
+        HYUNDAI_CANFD_SCC_ADDR_CHECK(1)
+      };
+
+      if (hyundai_canfd_alt_buttons && hyundai_canfd_half_rate_counters && hyundai_canfd_alt_wheel_buttons_param) {
+        hyundai_canfd_alt_wheel_buttons = true;
+        SET_RX_CHECKS(hyundai_canfd_lka_steer_msg_alt_wheel_buttons_rx_checks, ret);
+      } else if (hyundai_canfd_alt_buttons && hyundai_canfd_half_rate_counters) {
         SET_RX_CHECKS(hyundai_canfd_lka_steer_msg_alt_buttons_half_rate_rx_checks, ret);
       } else if (hyundai_canfd_alt_buttons) {
         SET_RX_CHECKS(hyundai_canfd_lka_steer_msg_alt_buttons_rx_checks, ret);

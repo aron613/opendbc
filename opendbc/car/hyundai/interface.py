@@ -232,6 +232,10 @@ class CarInterface(CarInterfaceBase):
     if stock_cp.flags & HyundaiFlags.CANFD_HALF_RATE_COUNTERS:
       ret.safetyParam |= HyundaiSafetyFlagsSP.CANFD_HALF_RATE_COUNTERS
 
+    # panda reads the LFA/RES/SET/main buttons from WHEEL_BUTTONS_ALT (0x10B) on these cars (see hyundai_canfd.h)
+    if stock_cp.flags & HyundaiFlags.CANFD_ALT_WHEEL_BUTTONS:
+      ret.safetyParam |= HyundaiSafetyFlagsSP.CANFD_ALT_WHEEL_BUTTONS
+
     return ret
 
   @staticmethod

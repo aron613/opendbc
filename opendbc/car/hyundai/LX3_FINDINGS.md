@@ -8,6 +8,7 @@ Routes referenced:
 - After pin flip: `69fb86b6677ce882/00000003--94eb544029` (3 segments)
 - Deliberate button-press test: `69fb86b6677ce882/00000008--c7bfd877d8` (7 segments, car unrecognized → panda in passthrough)
 - First run of this branch, car recognized, parked passive test (LFA ×4 on/off, full-lock sweep, no cruise): `69fb86b6677ce882/00000004--925bf85ead` (2 segments)
+- Second run, MADS on, longitudinal off, parked LFA presses + door cycles + ~5 s of driving: `69fb86b6677ce882/00000008--89dc7fcd9c` (see "Run with MADS on" below)
 - Reference (known-working, same `hyundai_n` harness, not the owner's car): `KIA_SPORTAGE_HEV_2026` test route `1635e7fee82dec3b/00000000--aa7efe7199`
 
 ## Bus layout (from the owner's own captured logs, after the pin flip)
@@ -73,7 +74,42 @@ Runtime flags observed in `carParams` on the recognized run: `CANFD | CANFD_ANGL
 - The bytes that *do* change in 0x1AA (bytes 4, 6, 8, and low bits of 10/11) are rolling counters/heartbeats (binary-counter halving pattern confirmed), not button state.
 - One genuine sparse signal was found at byte 9 / byte 10 bit 7 (mirrored), 5 discrete pulses, but all 5 occur while the vehicle is *moving*, not during the parked test — best (unconfirmed) guess is turn-signal-stalk activity, not a button.
 
-**Conclusion: on LX3, cruise/LFA button state is not carried in `CRUISE_BUTTONS_ALT` at all.** `CANFD_ALT_BUTTONS` gets the parser looking at the right *address*, but the fields carstate.py currently reads from it (`CRUISE_BUTTONS`, `ADAPTIVE_CRUISE_MAIN_BTN`, `LDA_BTN`) will never produce a button event on this car.
+**Conclusion: on LX3, cruise/LFA button state is not carried in `CRUISE_BUTTONS_ALT` at all.** `CANFD_ALT_BUTTONS` gets the parser looking at the right *address*, but the fields carstate.py reads from it (`CRUISE_BUTTONS`, `ADAPTIVE_CRUISE_MAIN_BTN`, `LDA_BTN`) will never produce a button event on this car. The real button message is `WHEEL_BUTTONS_ALT` 0x10B, next section.
+
+## Wheel buttons — resolved: `WHEEL_BUTTONS_ALT` (0x10B)
+
+Found by scanning every bit on every bus for toggles within 0.2 s of each button press on the two recognized runs, then
+decoding the full payload on the passthrough button-press route (`00000008--c7bfd877d8`), where the panda forwarded the
+camera untouched so the cluster and SCC answered every press.
+
+Message: **0x10B, 16 bytes, 25 Hz, E-CAN (bus 1).** Bytes 0-1 are the standard HKG CAN-FD checksum (matches `hkg_can_fd_checksum` on
+501/501 logged frames), byte 2 is the counter and it **advances by 2 per frame** (5745 of 5747 deltas, same gateway
+half-rate pattern as 0x100/0x130). Not multiplexed: bytes 3-15 hold one fixed pattern (byte 11 = 0x20) and only **byte 10**
+ever changes. Byte 10 is a button-ID byte held for ~0.2-0.25 s per press:
+
+| Byte 10 | DBC bit | Car's response on the passthrough route | Button | Signal |
+|---|---|---|---|---|
+| 0x80 | 87 | `LFA_ICON` (0x1E0 and 0x161) toggled ~0.45 s after every pulse; 6 pulses = 4 parked + 2 driving LFA presses | LFA | `LFA_BTN` |
+| 0x08 | 83 | `SCC_CONTROL.MainMode_ACC` and `ACCMode` went 0→1 with `VSetDis` 20 (t=143.3, 219.3); second press turned it off (t=218.4). In Park it only raised cluster `ALERTS_5`=4 | cruise / main (speedometer icon) | `MAIN_BTN` |
+| 0x01 | 80 | cluster `SETSPEED_SPEED` and `VSetDis` +1 per press (145.8 … 152.0, 220.5 … 222.5) | RES + | `RES_ACCEL_BTN` |
+| 0x02 | 81 | `SETSPEED_SPEED` and `VSetDis` −1 per press (149.2, 224.9 … 227.1) | SET − | `SET_DECEL_BTN` |
+| 0x03 | 80+81 | 5 presses in Park (61.6 … 82.4), no cluster or SCC response | **unidentified: gap or cancel** | deliberately unmapped |
+
+The parked part of that route was described as RES, SET, CANCEL, gap×4, main, LFA×4 but the log holds 2× 0x08, 5× 0x03,
+4× 0x80, so the parked codes cannot be assigned from the description alone; the Drive segment is unambiguous. 0x03 needs one
+short test in Drive with cruise engaged (press gap, then cancel, ~5 s apart) so the cluster distinguishes them. Until then both
+openpilot and the panda treat RES+SET-together as *no button*.
+
+The camera's `LKAS_ALT.LFA_BUTTON` (bit 56, bus 2) is an echo of the 0x80 press: it pulses ~20 ms after the 0x10B bit falls.
+It is superseded by 0x10B, which is earlier, checksummed, on the validated powertrain bus, and readable by the panda.
+
+**Implemented on this branch** (`HyundaiFlags.CANFD_ALT_WHEEL_BUTTONS`, `HyundaiSafetyFlagsSP.CANFD_ALT_WHEEL_BUTTONS` = safety_param_sp bit 9):
+
+- DBC: `WHEEL_BUTTONS_ALT` with the four bit signals above.
+- carstate: `cruise_buttons` (RES/SET), `main_buttons` and `buttons_counter` from 0x10B; `mads.py` reads `LFA_BTN` from it (the camera-echo path is gone). Parser counter step 2.
+- panda: `HYUNDAI_CANFD_ALT_WHEEL_BUTTONS_RX_CHECKS` = the alt-buttons + half-rate set **plus** 0x10B (checksum, exact +2 counter, 25 Hz). 0x1AA stays in the set. The rx hook decodes RES/SET/main/LFA from 0x10B for `hyundai_common_cruise_buttons_check` and the MADS button, and skips the 0x1AA field decode (those fields are always zero here and feeding both messages into the recent-press counter would shrink its window). The flag only takes effect on top of `CANFD_ALT_BUTTONS` + `CANFD_HALF_RATE_COUNTERS`; without them the panda falls back to the previous set and ignores 0x10B.
+- panda checksum: `hyundai_common_canfd_compute_checksum` had no final XOR for 16-byte frames (only 24 and 32). No 16-byte message was checksum-checked before (every 16-byte RX entry has `ignore_checksum`), so nothing existing changes; the 16-byte constant `0x041D` from `hkg_can_fd_checksum` was added and a test feeds real logged 0x10B frames through the panda.
+- Replay of both recognized routes through `CarInterface` with the rebuilt `carParams`: `canValid` on every frame after startup; on `c7bfd877d8` the events are mainCruise ×2 (Park), lkas ×4, mainCruise, accelCruise ×7, decelCruise, mainCruise ×2, accelCruise ×4, decelCruise ×4, lkas ×2 in exactly the logged order, `cruiseState.enabled` follows `ACCMode` (143.3-153.1, 219.3-236.2), and the five 0x03 presses produce no event. On `89dc7fcd9c` all 9 presses are `lkas`.
 
 ## Where the real state lives instead
 
@@ -93,7 +129,7 @@ Runtime flags observed in `carParams` on the recognized run: `CANFD | CANFD_ANGL
 - Why the icon stayed off: in `hyundaiCanfd` mode with `CANFD_LKA_STEER_MSG_ALT`, the panda **blocks** the camera's 0x110 from being forwarded bus 2 → bus 0 (bus-0 receptions of 0x110 stop at t=15.6 s exactly) and openpilot sends its own 0x110 with `LFA_BUTTON = 0`. The ADRV never sees the press, so it never toggles `LFA_ICON`.
 - Cross-check on the unrecognized button-press route (`00000008`, panda in `elm327` passthrough, camera 0x110 forwarded untouched): `LFA_BUTTON` pulsed at 87.16, 92.16, 96.68, 102.12, 228.81, 232.45 s and `LFA_ICON` in 0x1E0 toggled ~180 ms after each (87.34, 92.34, 96.83, 102.29, 228.97, 232.62). Causal chain: button → camera `LKAS_ALT.LFA_BUTTON` → forwarded to ADRV → `LFA_ICON`.
 
-**Conclusion:** `LFA_ICON` was a real car signal, but it is *downstream of a message we intercept*, so it is dead whenever openpilot is running. Do not use it. The correct button source is **`LKAS_ALT.LFA_BUTTON` read from the camera bus (bus 2 / `CAN.CAM`)**. We never transmit on that bus, so there is no circularity, and it is unaffected by whatever we put in our own 0x110.
+**Conclusion:** `LFA_ICON` was a real car signal, but it is *downstream of a message we intercept*, so it is dead whenever openpilot is running. Do not use it. The camera-bus `LKAS_ALT.LFA_BUTTON` was used as the button source for one run; it has since been replaced by the physical button message `WHEEL_BUTTONS_ALT` 0x10B bit 87 on E-CAN (see "Wheel buttons — resolved"), which precedes the camera echo and is also what the panda reads.
 
 ## What blocked engagement on the recognized run (must be fixed before any engagement test)
 
@@ -135,20 +171,39 @@ fingerprinting finishes; the panda-side blocker below is untouched):
 | Need | Where it lives on LX3 | How it was verified |
 |---|---|---|
 | Driver seatbelt | `SEATBELTS_ALT` 0x3E0 (24 B, ~5 Hz, E-CAN), `DRIVER_SEATBELT` bit 24, 1 = latched | Route `00000008`: bit was 1 the whole drive and dropped to 0 at t=387.5 s, 0.2 s after the shift to P at the end. Route `00000004` (parked test): 0 throughout. |
-| Driver door | `DOORS_ALT` 0x3E2 (16 B, ~5 Hz, E-CAN), `DRIVER_DOOR` bit 64 | **Not verified** — no door-open event in either route; position taken from a third-party LX3 HEV DBC. Byte 9 bits 2/4/6 + byte 10 bit 0 all cleared at t=130.67 s right after the shift out of P (auto door lock), so those look like lock states, not door-open. |
+| Driver door | `DOORS_ALT` 0x3E2 (16 B, ~5 Hz, E-CAN), `DRIVER_DOOR` bit 64 | **Verified** on `00000008--89dc7fcd9c`: three driver-door open/close cycles (165.3-167.3, 168.6-175.8, 178.1-179.8 s) registered as `doorOpen`. Byte 9 bits 2/4/6 + byte 10 bit 0 all cleared right after the shift out of P (auto door lock), so those are lock states. |
 | Blinkers | `BLINKERS_ALT` 0x3E3 (16 B, ~5 Hz + event frames, E-CAN). Left: lamp bit 90, active bit 93. Right: lamp bit 92, active bit 95. Each side is a 2-bit field (on = lamp bit, off = the bit below it); byte 12 bit 1 = any indicator active. | Route `00000008`: lamp bits flash at 1.25 Hz inside constant "active" envelopes. Left/right assignment from steering direction: all 3 left bursts sit at positive (left) angles (e.g. +239° mean leaving the parking spot), all 5 right bursts at negative angles (down to −330°). Matches the third-party DBC. |
 | Hands-on detection | **Not found.** 0x2AF does not exist on this car. 0x3D4 byte 5 (0x90/0x60) only follows driver *torque* direction (non-zero in 19 % of high-torque samples, 1.6 % otherwise), so it is not a capacitive hands-on signal. | `hands_on_steering_grip` is not read on this platform; it is unused elsewhere anyway. `steeringPressed` comes from MDPS torque and works (16 transitions during the parked sweep). |
 | Gear / accelerator counters | `GEAR_SHIFTER` 0x130 and `ACCELERATOR_BRAKE_ALT` 0x100 arrive at ~49 Hz with COUNTER +2 per frame (4238 of 4241 deltas). `GEAR_ALT` 0x40 same pattern; `ACCELERATOR_ALT` 0x105 counter is constant. | New `HyundaiFlags.CANFD_HALF_RATE_COUNTERS` → `CANParser.set_counter_step(msg, 2)` for the gear and accelerator messages. Replay of `00000008` decodes P→R→N→D→N→R→P, brake before the shift to R, gas pulses while driving. |
-| LFA / MADS button | `LKAS_ALT` 0x110 on the **camera bus** (bus 2), `LFA_BUTTON` bit 56, ~30 ms pulse per press | `mads.py` reads it for `CANFD_ANGLE_STEERING + CANFD_LKA_STEER_MSG_ALT` cars and `carstate.py` emits `ButtonType.lkas` press/release. Replay: 8/8 presses on `00000004` (t=36.2 … 62.1), 6/6 on `00000008`. |
+| LFA / MADS button | `WHEEL_BUTTONS_ALT` 0x10B (E-CAN), `LFA_BTN` bit 87, held ~0.2 s per press | See "Wheel buttons — resolved". Replay: 6/6 on `c7bfd877d8`, 9/9 on `89dc7fcd9c`, each followed by the car's own `LFA_ICON` toggle on the passthrough route. |
+| Cruise buttons | `WHEEL_BUTTONS_ALT` 0x10B: `RES_ACCEL_BTN` bit 80, `SET_DECEL_BTN` bit 81, `MAIN_BTN` bit 83 | Cluster set speed ±1 per RES/SET press, SCC on/off per main press on `c7bfd877d8`. Gap and cancel not yet identified (code 0x03 is one of them). |
 
 Flags added: `HyundaiFlags.CANFD_ALT_BODY_MSGS` (0x3E0/0x3E2/0x3E3 instead of 0x411/0x413, no 0x2AF) and
 `HyundaiFlags.CANFD_HALF_RATE_COUNTERS`; both set statically on `HYUNDAI_PALISADE_LX3`.
 
-Still open after this: the cruise buttons themselves (RES/SET/CANCEL/main/gap)
-which are still not decoded anywhere — `pcmCruise` engagement relies on `SCC_CONTROL.ACCMode` from the car, so
-lateral-only should not need them. Note the panda still requires a recent RES/SET/CANCEL/main press *in 0x1AA* before
-it honors a cruise-engaged rising edge (`hyundai_common_cruise_state_check`), and those bits never move on this car, so
-stock-cruise engagement will not enable openpilot until the real button bits are found. MADS (LFA button) is unaffected.
+Still open after this: which of gap / cancel is byte-10 code 0x03 in 0x10B (the other one has not been seen at all). Until
+that is tested, openpilot never emits a `gapAdjustCruise`/`cancel` button event on this car and the panda does not count
+0x03 as a recent press. RES, SET and main are decoded from 0x10B on both sides now, so the panda's recent-press
+requirement for stock-cruise engagement (`hyundai_common_cruise_state_check`) can be met.
+
+## Run with MADS on (`00000008--89dc7fcd9c`) — why every LFA press ended in "Controls Mismatch: Lateral"
+
+Build 1a57f8a25e (0x1AA RX checks + half-rate counter + angle model, LFA from the camera echo). Fingerprinted, `canValid`
+throughout, `safetyRxChecksInvalid` false throughout, no TX blocked, no panda faults — the previous run's blockers were gone.
+
+- Nine presses of the LFA button (all nine: 0x10B byte 10 = 0x80; no 0x08 anywhere, so the cruise button was not pressed
+  on this run despite what it felt like). Five in Park (MADS toggled on/paused, "Gear not D"), three in Drive.
+- Each Drive press: openpilot MADS `enabled/active` at once (from the camera-echo `LFA_BUTTON`), then exactly 2 s later
+  `controlsMismatchLateral` → "TAKE CONTROL IMMEDIATELY" and MADS disabled. Panda `controlsAllowedLateral` was false for
+  the entire route: its MADS button is read from 0x1AA bit 39 and its ACC-main edge from `SCC_CONTROL` bit 66, and neither ever
+  moved. `mads.py` counts 200 frames of "openpilot active, panda not" and disengages. This is what the 0x10B work fixes.
+- openpilot never commanded steering: `carControl.latActive` stayed false because MADS was always dropped before `vEgo`
+  exceeded the standstill threshold (max 0.5 m/s). The transmitted `LKAS_ALT` kept `LKAS_ANGLE_ACTIVE` = 1 (inactive),
+  torque gain 0, angle request tracking the measured angle, identical to the (blocked) camera frame except
+  `LKA_SysIndReq` 1 vs 0. `SCC_CONTROL` and the cluster (0x161) never changed. Nothing in the log explains the "held
+  off-center" feel; the angle request tracks the MDPS angle (0xEA), which reads ~7 % larger than 0x125.
+- Calibration: calibrated, 100 %, 15 blocks, pitch 0.137 rad (within limits).
+- Door bit verified (three open/close cycles), seatbelt buckled at 192.8 s, gear P→R→N→D→N→R→D→N→R→P all decoded.
 
 ### Also confirmed on this run
 

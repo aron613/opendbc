@@ -16,6 +16,7 @@ class HyundaiSafetyFlagsSP:
   NON_SCC = 8
   # bits 4-7 carry the angle steering model id (see below)
   CANFD_HALF_RATE_COUNTERS = 256  # ACCELERATOR_BRAKE_ALT (0x100) counter advances by 2 per frame (2026 Palisade LX3)
+  CANFD_ALT_WHEEL_BUTTONS = 512  # buttons (LFA/RES/SET/main) come from WHEEL_BUTTONS_ALT (0x10B), not 0x1AA (2026 Palisade LX3)
 
 
 # Angle steering vehicle model IDs — encoded in safety_param_sp bits [4:7].
