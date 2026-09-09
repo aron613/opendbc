@@ -184,6 +184,10 @@ class HyundaiFlags(IntFlag):
   # CRUISE_BUTTONS_ALT (0x1AA) fields, which never move on these cars. LFA, RES, SET and main are decoded from it.
   CANFD_ALT_WHEEL_BUTTONS = 2 ** 30
 
+  # Angle steering: hand EPS authority over to the driver at a lower driver torque (see compute_torque_reduction_gain).
+  # On the 2026 Palisade (LX3) the stock curve left 25-40 % authority at 400-470 torque units, which felt stiff.
+  CANFD_FAST_OVERRIDE_HANDOFF = 2 ** 31
+
 
 @dataclass
 class HyundaiCarDocs(CarDocs):
@@ -440,7 +444,8 @@ class CAR(Platforms):
     # CANFD_ALT_BODY_MSGS / CANFD_HALF_RATE_COUNTERS / CANFD_ALT_WHEEL_BUTTONS: see LX3_FINDINGS.md, verified on routes
     # 69fb86b6677ce882/00000004--925bf85ead, 69fb86b6677ce882/00000008--c7bfd877d8 and 69fb86b6677ce882/00000008--89dc7fcd9c.
     flags=HyundaiFlags.CANFD_ANGLE_STEERING | HyundaiFlags.CANFD_ALT_BUTTONS |
-          HyundaiFlags.CANFD_ALT_BODY_MSGS | HyundaiFlags.CANFD_HALF_RATE_COUNTERS | HyundaiFlags.CANFD_ALT_WHEEL_BUTTONS,
+          HyundaiFlags.CANFD_ALT_BODY_MSGS | HyundaiFlags.CANFD_HALF_RATE_COUNTERS | HyundaiFlags.CANFD_ALT_WHEEL_BUTTONS |
+          HyundaiFlags.CANFD_FAST_OVERRIDE_HANDOFF,
   )
   HYUNDAI_VELOSTER = HyundaiPlatformConfig(
     [HyundaiCarDocs("Hyundai Veloster 2019-20", min_enable_speed=5. * CV.MPH_TO_MS, car_parts=CarParts.common([CarHarness.hyundai_e]))],

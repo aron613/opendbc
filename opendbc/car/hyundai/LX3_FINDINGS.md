@@ -214,3 +214,20 @@ throughout, `safetyRxChecksInvalid` false throughout, no TX blocked, no panda fa
 ## Open issue 2 — resolved
 
 Bus mapping is no longer an open issue. See "Bus mapping — resolved" above: the flip is correct, matches the reference car's topology, and needs no code change.
+
+## First road test (`00000011--6f004f6f07`, lane lines, 15-25 mph) and override tuning
+
+122 s active, one LFA engage, no alerts, no panda blocks. Hands-off tracking: command minus MDPS angle mean 0.03°, std 0.38°,
+lag under 50 ms, no oscillation, command rate p99 10°/s. The model put the car 1-16 cm right of lane center (not left);
+the wheel held +0.9° (left) on straights, which the angle-offset learner (reset that drive, +0.27° by the end) had not
+absorbed. Both `paramsd` and `calibrationd` reset at the start of that drive; calibration finished at 98 s and its yaw
+ended ~1° from the previous drive, so the perceived left bias is unconfirmed until calibration settles.
+
+**Override stiffness.** `STEER_THRESHOLD` is 175 torque units for every `CANFD_ANGLE_STEERING` car and tripped promptly
+(peaks 185-541, similar scale to the Sportage HEV reference route, median override peak 392). The stiff feel came from
+`compute_torque_reduction_gain`: at 23 mph the stock table only reaches its floor (~0.19) at ~525 units, so 400-470 unit
+pushes left the gain at 0.25-0.40. `HyundaiFlags.CANFD_FAST_OVERRIDE_HANDOFF` (LX3 only) keeps the ceiling, shelf, floor and
+the nudge region (bp1/bp2) but starts the drop at 180-200 units (always above the 175 override threshold) and reaches
+the floor at 240-360 units instead of 400-700. Panda untouched (it only checks raw gain <= 250 and zero while inactive).
+Trade-off: torque spikes above ~200 (rough road) now cut authority sooner, and the recovery ramp (+0.004/frame) is
+unchanged, so a brief spike costs up to ~0.5 s of reduced assist. Tests: `tests/test_torque_reduction_gain.py`.

@@ -41,15 +41,26 @@ def get_baseline_safety_cp():
   return CarInterface.get_non_essential_params(ANGLE_SAFETY_BASELINE_MODEL)
 
 
-def compute_torque_reduction_gain(steering_torque, v_ego, lat_active, last_gain):
+def compute_torque_reduction_gain(steering_torque, v_ego, lat_active, last_gain, fast_handoff=False):
   if lat_active:
     ceiling = np.interp(v_ego, [0.5, 1.5], [1.0, 0.85])
     shelf = np.interp(v_ego, [2, 11], [0.45, 0.6])
     floor = np.interp(v_ego, [2, 22], [0.1, 0.3])
     bp1 = np.interp(v_ego, [2, 11], [75, 125])
     bp2 = np.interp(v_ego, [2, 11], [125, 150])
-    bp3 = np.interp(v_ego, [2, 11], [175, 275])
-    bp4 = np.interp(v_ego, [2, 22], [400, 700])
+    if fast_handoff:
+      # HyundaiFlags.CANFD_FAST_OVERRIDE_HANDOFF (2026 Palisade LX3): same ceiling/shelf/floor and the same nudge
+      # region (bp1/bp2), but the drop from the shelf starts just above the 175-unit steerOverride threshold and
+      # reaches the floor by 240-360 units instead of 400-700 (bp3 stays >= 180 at every speed). On route 69fb86b6677ce882/00000011--6f004f6f07
+      # the driver's overrides peaked at 300-470 units while the stock curve still left the gain at 0.25-0.40,
+      # which felt stiff; hands-off torque on that drive stayed below ~190 units (p99), so the shelf is untouched
+      # for resting hands. Cost: torque spikes above ~200 (rough road) now cut authority sooner and the recovery
+      # ramp (+0.004/frame) is unchanged, so a brief spike costs up to ~0.5 s of reduced assist.
+      bp3 = np.interp(v_ego, [2, 11], [180, 200])
+      bp4 = np.interp(v_ego, [2, 22], [240, 360])
+    else:
+      bp3 = np.interp(v_ego, [2, 11], [175, 275])
+      bp4 = np.interp(v_ego, [2, 22], [400, 700])
     target = np.interp(abs(steering_torque), [bp1, bp2, bp3, bp4], [ceiling, shelf, shelf, floor])
 
   else:
@@ -158,7 +169,8 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
       #   apply_angle = apply_steer_angle_limits_vm(apply_angle or desired_angle, self.apply_angle_last, v_ego_raw, CS.out.steeringAngleDeg, CC.latActive,
       #                                             self.params, self.BASELINE_VM)
 
-      apply_torque = compute_torque_reduction_gain(CS.out.steeringTorque, v_ego_raw, CC.latActive, self.apply_torque_last)
+      apply_torque = compute_torque_reduction_gain(CS.out.steeringTorque, v_ego_raw, CC.latActive, self.apply_torque_last,
+                                                   fast_handoff=bool(self.CP.flags & HyundaiFlags.CANFD_FAST_OVERRIDE_HANDOFF))
       apply_steer_req = CC.latActive and apply_torque != 0
 
       # Failsafe if we detected we'd violate safety
