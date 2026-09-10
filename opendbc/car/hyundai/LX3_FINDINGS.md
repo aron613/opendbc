@@ -231,3 +231,38 @@ the nudge region (bp1/bp2) but starts the drop at 180-200 units (always above th
 the floor at 240-360 units instead of 400-700. Panda untouched (it only checks raw gain <= 250 and zero while inactive).
 Trade-off: torque spikes above ~200 (rough road) now cut authority sooner, and the recovery ramp (+0.004/frame) is
 unchanged, so a brief spike costs up to ~0.5 s of reduced assist. Tests: `tests/test_torque_reduction_gain.py`.
+
+## Stock HDA takes lateral while stock ACC is engaged (`00000018--30cfc70d81`)
+
+How steering reaches the MDPS on this car: our `LKAS_ALT` (0x110) goes out on A-CAN, the ADRV re-transmits it on E-CAN
+as `LFA_ALT` (0xCB), and the MDPS steers to 0xCB only. With MADS alone the relay is byte-faithful (angle within 0.3°,
+gain identical, one-frame lag; 0xCB has a +1 counter and valid checksum on every frame). 0.7 s after stock ACC engaged
+(`ACCMode` 1 at 104.60 s) the ADRV lit `HDA_ICON`, switched `LFA_ICON` to 2 and **substituted its own request on 0xCB**
+(angle 3-8° from ours, gain 0.0-0.4 while we sent 0.85). The MDPS followed 0xCB to 0.44° and ignored us by 3.4° on
+average; driver torque p90 rose from 65 to 141. The camera's own 0x110 stayed inactive throughout, so the request came
+from the ADRV. Substitution ended ~3 s after the brake cancel. The green wheel (`LFA_ICON` = 2 in 0x1E0, an ADRV message
+we cannot override) mirrors our active steering once main cruise has been on; it stayed lit because `MainMode_ACC` was
+left on until engine off. On the Sportage HEV reference route the ADRV kept relaying openpilot through ACC-on driving,
+so the 0x362 "no lane lines" spoof (which is sent on the LX3 too, same byte layout) is not enough here. Likely trigger:
+our own 0x110 reporting LFA active (`LKA_RcgSta` 3, `LKAS_ANGLE_ACTIVE` 2, `LKA_SysIndReq` 2 once openpilot is enabled).
+
+**Implemented (opendbc + sunnypilot, no panda changes), gated on `HyundaiFlagsSP.CANFD_ADRV_LATERAL_TAKEOVER`:**
+
+1. `carStateSP.stockLateralActive` = `cruiseState.enabled`. MADS raises `stockLateralActive` ("Stock HDA in Control /
+   openpilot steering paused"), goes to *paused* whether or not openpilot is PCM-enabled, blocks LFA re-enable with a
+   no-entry, and resumes silently when ACC disengages.
+2. Relay watchdog (`opendbc/sunnypilot/car/hyundai/adrv_relay.py`): 0xCB vs the last 0x110 we sent. Mismatch = relay
+   inactive while we command, or gain differs by > 0.10, or angle differs by > 2° + 0.03 s × command rate (skipped
+   above 170° where 0xCB saturates). 30 consecutive frames (0.3 s) raise `steerFaultTemporary` for 5 s
+   ("Steering Assist Temporarily Unavailable", lateral dropped).
+3. Override gain floor for `CANFD_FAST_OVERRIDE_HANDOFF` lowered to 0.10 at all speeds (stock: 0.10 at 4.5 mph rising to
+   0.30 at 49 mph; on `00000017` the 0.18-0.28 floor still left the EPS fighting 400-600 unit overrides).
+
+**Suppression experiments for later (each behind a flag, parked/low-speed first):**
+
+- Send `LKA_RcgSta` 0 and keep `LKA_SysIndReq` 1 in our 0x110 while active; check the MDPS still follows the angle.
+- Zero the byte 8/9 lane-quality fields of 0x362 in addition to byte 7.
+- Compare which forwarded camera messages change at HDA arming to find the ADRV's lane-availability source.
+
+**`steerTempUnavailableSilent`:** `MDPS_ADAS_AciFltSig_Lv2` = 4 for ~20 ms at crawl speed on `00000017` (84.7 s) and
+`00000018` (163.0 s). Harmless so far; watch for it at speed.

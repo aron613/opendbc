@@ -23,7 +23,7 @@ class TestTorqueReductionGain(unittest.TestCase):
 
   def test_fast_handoff_reaches_floor_by_300_to_400(self):
     floor = converged_gain(1000, self.V_23MPH, True)
-    self.assertAlmostEqual(floor, 0.176, delta=0.02)
+    self.assertAlmostEqual(floor, 0.10, delta=0.01)
     for torque in (350, 400, 470):
       self.assertAlmostEqual(converged_gain(torque, self.V_23MPH, True), floor, delta=0.01, msg=f"torque {torque}")
     self.assertLess(converged_gain(300, self.V_23MPH, True), 0.35)
@@ -54,6 +54,13 @@ class TestTorqueReductionGain(unittest.TestCase):
       gain = compute_torque_reduction_gain(400, self.V_23MPH, True, gain, fast_handoff=True)
       frames += 1
     self.assertLessEqual(frames, 35)
+
+  def test_fast_handoff_floor_is_stock_low_speed_floor(self):
+    # 0.10 at every speed; stock rises to 0.30 by 22 m/s
+    for v in (0.0, 2.0, 5.0, self.V_23MPH, 20.0, 30.0):
+      self.assertAlmostEqual(converged_gain(1000, v, True), 0.10, delta=0.01, msg=f"v {v}")
+    self.assertAlmostEqual(converged_gain(1000, 22.0, False), 0.30, delta=0.01)
+    self.assertAlmostEqual(converged_gain(1000, 2.0, False), 0.10, delta=0.01)
 
   def test_inactive_is_zero(self):
     self.assertEqual(compute_torque_reduction_gain(400, self.V_23MPH, False, 0.0, fast_handoff=True), 0.0)

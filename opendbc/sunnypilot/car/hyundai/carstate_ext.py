@@ -11,6 +11,7 @@ from opendbc.car import Bus, structs
 from opendbc.can.parser import CANParser
 from opendbc.car.hyundai.values import HyundaiFlags
 from opendbc.sunnypilot.car.hyundai.values import HyundaiFlagsSP
+from opendbc.sunnypilot.car.hyundai.adrv_relay import AdrvRelayWatchdog
 
 
 class CarStateExt:
@@ -19,6 +20,11 @@ class CarStateExt:
     self.CP_SP = CP_SP
 
     self.aBasis = 0.0
+
+    # last lateral command the CarController sent: (angle deg, torque-reduction gain, active). Written by the
+    # controller each frame so the ADRV relay watchdog below can compare it with what the MDPS actually received.
+    self.op_lat_cmd = (0.0, 0.0, False)
+    self.adrv_relay_watchdog = AdrvRelayWatchdog()
 
   def update_speed_limit(self, cp, cp_cam) -> float:
     speed_limit = 0
@@ -84,3 +90,18 @@ class CarStateExt:
     self.aBasis = cp.vl["TCS"]["aBasis"]
 
     ret_sp.speedLimit = self.update_speed_limit(cp, cp_cam) * speed_factor
+
+    if self.CP_SP.flags & HyundaiFlagsSP.CANFD_ADRV_LATERAL_TAKEOVER:
+      # 1. While stock ACC is engaged the ADRV owns lateral (it arms HDA and substitutes its own LFA_ALT request within
+      #    ~0.7 s of ACCMode going to 1, and the MDPS follows it, not us). Tell MADS to pause lateral for that time.
+      ret_sp.stockLateralActive = ret.cruiseState.enabled
+
+      # 2. Relay watchdog: LFA_ALT (0xCB) on E-CAN is what the MDPS steers to. Normally it is a byte-faithful relay of
+      #    our last LKAS_ALT. If it stops matching while we are commanding, we have lost authority: raise the
+      #    steer-unavailable fault so lateral drops with an alert. See adrv_relay.py for the thresholds and evidence.
+      relay = cp.vl["LFA_ALT"]
+      cmd_angle, cmd_gain, cmd_active = self.op_lat_cmd
+      relay_fault = self.adrv_relay_watchdog.update(cmd_angle, cmd_gain, cmd_active,
+                                                    relay["ADAS_StrAnglReqVal"], relay["ADAS_ACIAnglTqRedcGainVal"],
+                                                    relay["ADAS_ActvACILvl2Sta"] == 2)
+      ret.steerFaultTemporary = ret.steerFaultTemporary or relay_fault

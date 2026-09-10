@@ -223,6 +223,11 @@ class CarInterface(CarInterfaceBase):
 
     ret.intelligentCruiseButtonManagementAvailable = not (stock_cp.flags & HyundaiFlags.CANFD_ALT_BUTTONS)
 
+    # 2026 Palisade (LX3): the ADRV takes over lateral (substitutes its own LFA_ALT 0xCB) while stock ACC is engaged.
+    # See HyundaiFlagsSP.CANFD_ADRV_LATERAL_TAKEOVER and LX3_FINDINGS.md.
+    if candidate == CAR.HYUNDAI_PALISADE_LX3:
+      ret.flags |= HyundaiFlagsSP.CANFD_ADRV_LATERAL_TAKEOVER.value
+
     # Encode angle steering vehicle model ID so the panda can use per-vehicle physics
     if stock_cp.flags & HyundaiFlags.CANFD_ANGLE_STEERING:
       angle_model_id = ANGLE_STEERING_MODEL_BY_CAR.get(candidate, 0)

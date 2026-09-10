@@ -77,3 +77,7 @@ class HyundaiFlagsSP(IntFlag):
   NON_SCC_NO_FCA = 2 ** 8  # not all have FCA
   SPEED_LIMIT_AVAILABLE = 2 ** 9  # platforms with speed limit data available
   HAS_LKAS12 = 2 ** 10
+  # The ADAS ECU (ADRV) relays our LKAS_ALT (A-CAN 0x110) to the MDPS as LFA_ALT (E-CAN 0xCB) and, once stock ACC is
+  # engaged, arms HDA and substitutes its own lateral request on 0xCB. openpilot lateral must yield while stock ACC is
+  # engaged and watch the relay. Seen on the 2026 Palisade (LX3), route 69fb86b6677ce882/00000018--30cfc70d81.
+  CANFD_ADRV_LATERAL_TAKEOVER = 2 ** 11

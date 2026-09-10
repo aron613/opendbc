@@ -166,3 +166,4 @@ class CarControlSP:
 @auto_dataclass
 class CarStateSP:
   speedLimit: float = auto_field()
+  stockLateralActive: bool = auto_field()  # the car's own lane centering owns the steering; openpilot lateral must yield

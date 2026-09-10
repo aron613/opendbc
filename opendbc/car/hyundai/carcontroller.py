@@ -46,6 +46,11 @@ def compute_torque_reduction_gain(steering_torque, v_ego, lat_active, last_gain,
     ceiling = np.interp(v_ego, [0.5, 1.5], [1.0, 0.85])
     shelf = np.interp(v_ego, [2, 11], [0.45, 0.6])
     floor = np.interp(v_ego, [2, 22], [0.1, 0.3])
+    if fast_handoff:
+      # LX3: with the stock floor (0.1 at 4.5 mph rising to 0.3 at 49 mph) the EPS still held 18-28 % of its authority
+      # against 400-600 unit overrides on route 69fb86b6677ce882/00000017--e353e21886, which still felt stiff. Use the
+      # stock table's low-speed floor at every speed; it only differs from stock above 2 m/s (4.5 mph).
+      floor = 0.1
     bp1 = np.interp(v_ego, [2, 11], [75, 125])
     bp2 = np.interp(v_ego, [2, 11], [125, 150])
     if fast_handoff:
@@ -190,6 +195,8 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
       apply_torque = 0
 
     self.apply_torque_last = apply_torque
+    # for the ADRV relay watchdog in carstate_ext (angle-steering cars): what we are about to put on the bus
+    CS.op_lat_cmd = (self.apply_angle_last, self.apply_torque_last, bool(apply_steer_req))
 
     # accel + longitudinal
     accel = float(np.clip(actuators.accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
