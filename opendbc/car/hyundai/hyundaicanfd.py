@@ -36,7 +36,7 @@ class CanBus(CanBusBase):
     return self._cam
 
 
-def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque, apply_angle, lkas_icon):
+def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque, apply_angle, lkas_icon, hide_lfa_status=False):
   values = {
     "LKA_OptUsmSta": 2,
     "LKA_SysIndReq": 2 if enabled else 1,
@@ -61,6 +61,13 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
       "ADAS_ACIAnglTqRedcGainVal": apply_torque if lat_active else 0,
     }
 
+    if hide_lfa_status:
+      # HDA suppression experiment A (2026 Palisade LX3): keep the angle request but do not report "lane recognized"
+      # or "LFA active" to the ADAS ECU. Neither signal is carried in the LFA_ALT (0xCB) relay the MDPS steers to; they
+      # go to the ADRV/cluster via LFA (0x12A), and the theory is that they are what arms stock HDA when ACC engages.
+      values["LKA_RcgSta"] = 0
+      values["LKA_SysIndReq"] = 1
+
   ret = []
   if CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG:
     lkas_msg = "LKAS_ALT" if CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG_ALT else "LKAS"
@@ -73,7 +80,7 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
   return ret
 
 
-def create_suppress_lfa(packer, CAN, lfa_block_msg, lka_steering_alt):
+def create_suppress_lfa(packer, CAN, lfa_block_msg, lka_steering_alt, zero_lane_bytes=False):
   suppress_msg = "CAM_0x362" if lka_steering_alt else "CAM_0x2a4"
   msg_bytes = 32 if lka_steering_alt else 24
 
@@ -83,6 +90,11 @@ def create_suppress_lfa(packer, CAN, lfa_block_msg, lka_steering_alt):
   values["SET_ME_0_2"] = 0
   values["LEFT_LANE_LINE"] = 0
   values["RIGHT_LANE_LINE"] = 0
+  if zero_lane_bytes and lka_steering_alt:
+    # HDA suppression experiment B (2026 Palisade LX3): bytes 8 and 9 carry the same 2-bit lane-quality pattern as
+    # byte 7 (values 0x00-0x33 only, on both the LX3 and the Sportage HEV camera). Zero them as well.
+    values["BYTE8"] = 0
+    values["BYTE9"] = 0
   return packer.make_can_msg(suppress_msg, CAN.ACAN, values)
 
 

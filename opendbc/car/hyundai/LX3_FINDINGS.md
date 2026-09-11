@@ -286,3 +286,28 @@ on faithful-but-slewing relay behavior during overrides, and an LFA press while 
 `manualSteeringRequired` and switched MADS off, so lateral did not come back after cancel. Override gains with the 0.10
 floor: -461 units at 10 mph reached 0.10 in 0.25 s, +400 at 20 mph in 0.70 s. Angle-offset learner: 0.89° → 0.39°
 average, calibration stable (50 blocks). Traffic left no clean hands-off straight time for a lane-position number.
+
+## HDA suppression experiments (opt-in; stock cruise + openpilot lateral)
+
+Param `HyundaiLx3HdaSuppressionExperiment` (Vehicle settings → Hyundai → "LX3 HDA Suppression Experiment"; default Off).
+`set_hyundai_hda_suppression_experiment` maps it onto `HyundaiFlagsSP` bits and into `carParamsSP.hdaSuppressionExperiment`,
+which is logged once per route, so the value is the marker for what ran (the raw param is also in `initData.params`).
+
+| Value | Name | What changes in our TX | Bypasses the cruise gate |
+|---|---|---|---|
+| 0 | Off | nothing; `stockLateralActive` pauses lateral while ACC is engaged | no |
+| 1 | Exp A | `LKAS_ALT.LKA_RcgSta` 3 → 0 and `LKA_SysIndReq` 2 → 1 while active | yes |
+| 2 | Exp B | `CAM_0x362` bytes 8 and 9 zeroed as well as the byte-7 lane fields | yes |
+| 3 | Exp C | A and B | yes |
+
+The ADRV relay watchdog is untouched by the experiments: if the ADRV substitutes its own 0xCB, lateral drops within
+0.3 s (plus any override grace) with "Steering Assist Temporarily Unavailable".
+
+**Why the changed bytes should not break normal lateral (ACC off):** the MDPS steers only to `LFA_ALT` (0xCB), which
+carries the angle request, the torque-reduction gain and `ADAS_ActvACILvl2Sta` (mirrors our `LKAS_ANGLE_ACTIVE`); it has
+no `LKA_RcgSta`/`LKA_SysIndReq` field. Those two are relayed into `LFA` (0x12A) for the cluster/gateway. `LKA_SysIndReq` 1
+while active is already what every MADS-only drive sent (openpilot sets 2 only when PCM-enabled) and the MDPS followed.
+`LKA_RcgSta` 0 while active has not been sent before; if the ADRV gates the relay on it, `ADAS_ActvACILvl2Sta` stays 1
+and the watchdog trips within 0.3 s of engaging: lateral drops with an alert, which is the safe failure. `CAM_0x362` is a
+camera→ADRV message the MDPS never sees; byte 7 has been zeroed on every drive so far, and bytes 8/9 carry the same
+0x00-0x33 two-bit pattern, so blanking them can only change what the ADRV believes about lanes, with the same failure mode.

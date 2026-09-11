@@ -94,7 +94,10 @@ class CarStateExt:
     if self.CP_SP.flags & HyundaiFlagsSP.CANFD_ADRV_LATERAL_TAKEOVER:
       # 1. While stock ACC is engaged the ADRV owns lateral (it arms HDA and substitutes its own LFA_ALT request within
       #    ~0.7 s of ACCMode going to 1, and the MDPS follows it, not us). Tell MADS to pause lateral for that time.
-      ret_sp.stockLateralActive = ret.cruiseState.enabled
+      #    With an HDA suppression experiment selected the gate is bypassed on purpose: openpilot keeps steering
+      #    through ACC engage and the relay watchdog below is the only protection.
+      experiment = bool(self.CP_SP.flags & (HyundaiFlagsSP.CANFD_HDA_EXP_LFA_STATUS | HyundaiFlagsSP.CANFD_HDA_EXP_LANE_BYTES))
+      ret_sp.stockLateralActive = ret.cruiseState.enabled and not experiment
 
       # 2. Relay watchdog: LFA_ALT (0xCB) on E-CAN is what the MDPS steers to. Normally it is a byte-faithful relay of
       #    our last LKAS_ALT. If it stops matching while we are commanding, we have lost authority: raise the

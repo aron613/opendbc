@@ -81,3 +81,7 @@ class HyundaiFlagsSP(IntFlag):
   # engaged, arms HDA and substitutes its own lateral request on 0xCB. openpilot lateral must yield while stock ACC is
   # engaged and watch the relay. Seen on the 2026 Palisade (LX3), route 69fb86b6677ce882/00000018--30cfc70d81.
   CANFD_ADRV_LATERAL_TAKEOVER = 2 ** 11
+  # HDA suppression experiments (opt-in, LX3 only, see LX3_FINDINGS.md). Either bit bypasses the stock-cruise lateral
+  # gate; the ADRV relay watchdog stays armed so a takeover still drops lateral with an alert.
+  CANFD_HDA_EXP_LFA_STATUS = 2 ** 12   # A: report LKA_RcgSta 0 and LKA_SysIndReq 1 in our LKAS_ALT while active
+  CANFD_HDA_EXP_LANE_BYTES = 2 ** 13   # B: also zero bytes 8 and 9 of the CAM_0x362 lane-line spoof
