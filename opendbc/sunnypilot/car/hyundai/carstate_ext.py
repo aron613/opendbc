@@ -103,5 +103,5 @@ class CarStateExt:
       cmd_angle, cmd_gain, cmd_active = self.op_lat_cmd
       relay_fault = self.adrv_relay_watchdog.update(cmd_angle, cmd_gain, cmd_active,
                                                     relay["ADAS_StrAnglReqVal"], relay["ADAS_ACIAnglTqRedcGainVal"],
-                                                    relay["ADAS_ActvACILvl2Sta"] == 2)
+                                                    relay["ADAS_ActvACILvl2Sta"] == 2, ret.steeringPressed)
       ret.steerFaultTemporary = ret.steerFaultTemporary or relay_fault

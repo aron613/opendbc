@@ -248,13 +248,22 @@ our own 0x110 reporting LFA active (`LKA_RcgSta` 3, `LKAS_ANGLE_ACTIVE` 2, `LKA_
 
 **Implemented (opendbc + sunnypilot, no panda changes), gated on `HyundaiFlagsSP.CANFD_ADRV_LATERAL_TAKEOVER`:**
 
-1. `carStateSP.stockLateralActive` = `cruiseState.enabled`. MADS raises `stockLateralActive` ("Stock HDA in Control /
-   openpilot steering paused"), goes to *paused* whether or not openpilot is PCM-enabled, blocks LFA re-enable with a
-   no-entry, and resumes silently when ACC disengages.
-2. Relay watchdog (`opendbc/sunnypilot/car/hyundai/adrv_relay.py`): 0xCB vs the last 0x110 we sent. Mismatch = relay
-   inactive while we command, or gain differs by > 0.10, or angle differs by > 2° + 0.03 s × command rate (skipped
-   above 170° where 0xCB saturates). 30 consecutive frames (0.3 s) raise `steerFaultTemporary` for 5 s
-   ("Steering Assist Temporarily Unavailable", lateral dropped).
+1. `carStateSP.stockLateralActive` = `cruiseState.enabled`. MADS raises `stockLateralActive` ("openpilot steering paused /
+   Steer manually"), goes to *paused* whether or not openpilot is PCM-enabled, refuses LFA presses while it lasts
+   (`lkasBlockedByStockLateral`: "openpilot Unavailable / Cancel cruise to resume steering", no state change so cancel
+   restores the pre-cruise MADS state), and resumes silently when ACC disengages.
+2. Relay watchdog (`opendbc/sunnypilot/car/hyundai/adrv_relay.py`): 0xCB vs a *model* of what a faithful ADRV would relay
+   from the last 0x110 we sent. The relay is not a byte copy: it clamps the angle at ±176.7° and slews it at ~200°/s
+   (route `0000001b`, 143.2-143.6 s and 257.3-257.6 s), while our command can move at 250-500°/s when unwinding an
+   override or sprinting on a standstill re-engage. The model clamps at 176.7° and slews at 250°/s, tracking 0xCB while
+   inactive. Mismatch = relay inactive while we command, or gain differs by > 0.10, or angle differs from the model by
+   > 2° + 0.03 s × model rate. The comparison is skipped while `steeringPressed` and for 0.5 s after release (the MDPS
+   follows the driver then, and both false trips on `0000001b` were inside or right after an override). 30 consecutive
+   frames (0.3 s) raise `steerFaultTemporary` for 5 s ("Steering Assist Temporarily Unavailable", lateral dropped).
+   Replayed against the logs: `0000001b` 0 trips and no mismatch streak ≥ 5 frames (the raw-command version tripped
+   at 143.6 and 257.6 s); `00000018` trips at 109.0 s (substitution began 105.2 s, driver overriding until 107.6 s plus
+   grace), 180.5 s (0.3 s after the second engage) and 195.7 s, then 222.1 and 259.4 s while the ADRV kept altering
+   the relay with main cruise left on.
 3. Override gain floor for `CANFD_FAST_OVERRIDE_HANDOFF` lowered to 0.10 at all speeds (stock: 0.10 at 4.5 mph rising to
    0.30 at 49 mph; on `00000017` the 0.18-0.28 floor still left the EPS fighting 400-600 unit overrides).
 
@@ -266,3 +275,14 @@ our own 0x110 reporting LFA active (`LKA_RcgSta` 3, `LKAS_ANGLE_ACTIVE` 2, `LKA_
 
 **`steerTempUnavailableSilent`:** `MDPS_ADAS_AciFltSig_Lv2` = 4 for ~20 ms at crawl speed on `00000017` (84.7 s) and
 `00000018` (163.0 s). Harmless so far; watch for it at speed.
+
+## Handoff test (`0000001b--e709e280e9`, build cd5ba319ad)
+
+The gate worked: `stockLateralActive` went true in the same 10 ms frame as `ACCMode` = 1 (156.72 s), MADS paused and our
+0x110 went inactive 10 ms later, the alert text appeared after 200 ms, and lateral resumed 20 ms after the brake cancel.
+**With our 0x110 inactive the ADRV never armed HDA** (`HDA_ICON` stayed 0, 0xCB stayed inactive), so nobody steered while
+cruise was on; the alert now says "Steer manually". Two things were wrong and are fixed above: the watchdog tripped twice
+on faithful-but-slewing relay behavior during overrides, and an LFA press while paused went through
+`manualSteeringRequired` and switched MADS off, so lateral did not come back after cancel. Override gains with the 0.10
+floor: -461 units at 10 mph reached 0.10 in 0.25 s, +400 at 20 mph in 0.70 s. Angle-offset learner: 0.89° → 0.39°
+average, calibration stable (50 blocks). Traffic left no clean hands-off straight time for a lane-position number.
