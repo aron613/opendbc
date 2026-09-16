@@ -347,7 +347,13 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
 
         # cruise standstill resume
         elif CC.cruiseControl.resume:
-          if self.CP.flags & HyundaiFlags.CANFD_ALT_BUTTONS:
+          if self.CP.flags & HyundaiFlags.CANFD_ALT_WHEEL_BUTTONS:
+            # LX3: spoof a ~0.24 s RES press on WHEEL_BUTTONS_ALT (6 frames at the message's 25 Hz), continuing the
+            # car's +2 counter sequence. The panda only passes byte 10 == 0x01 while controls are allowed.
+            for i in range(1, 7):
+              can_sends.append(hyundaicanfd.create_wheel_buttons_alt(self.packer, self.CAN, int(CS.buttons_counter) + 2 * i))
+            self.last_button_frame = self.frame
+          elif self.CP.flags & HyundaiFlags.CANFD_ALT_BUTTONS:
             # TODO: resume for alt button cars
             pass
           else:

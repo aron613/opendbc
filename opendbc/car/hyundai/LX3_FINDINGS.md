@@ -311,3 +311,47 @@ while active is already what every MADS-only drive sent (openpilot sets 2 only w
 and the watchdog trips within 0.3 s of engaging: lateral drops with an alert, which is the safe failure. `CAM_0x362` is a
 camera→ADRV message the MDPS never sees; byte 7 has been zeroed on every drive so far, and bytes 8/9 carry the same
 0x00-0x33 two-bit pattern, so blanking them can only change what the ADRV believes about lanes, with the same failure mode.
+
+## Exp A result (`00000035--a701ae3a3f`, 2026-09-15): stock cruise + openpilot lateral works
+
+`carParamsSP.hdaSuppressionExperiment` = 1. Two ACC-on windows (470.8-678.2 s and 696.9-718.7 s), openpilot active for
+142 s of them, hands off 134 s. The ADRV kept relaying our 0x110 onto 0xCB the whole time: |angle diff| 0.22° mean /
+2.4° max, |gain diff| 0.006, MDPS tracking us to 0.94°, 0xCB `ADAS_ActvACILvl2Sta` mirroring our active flag on every
+transition, `HDA_ICON` never lit, watchdog silent (longest mismatch streak 5 frames), and both brake cancels left the
+steering running. The relayed 0x12A carried `LKA_RcgSta` 0 / `LKA_SysIndReq` 1 all drive.
+
+**Conclusion:** the ADRV arms HDA from what our 0x110 reports about LFA state (in Route B the fields flipped to
+`LKA_RcgSta` 3 / `LKA_SysIndReq` 2 at the moment openpilot became PCM-enabled and HDA armed 100 ms later), not from
+lane data: the 0x362 spoof was identical in both drives. Exp A changes both fields at once, so which one is the trigger
+is not isolated; a SysIndReq-only variant would tell. Exp B and C are not needed for function. Plan: two more clean A
+drives at 25-45 mph, then make A the default (Off stays selectable, the relay watchdog stays the backstop). Known cost
+of `LKA_RcgSta` 0: the cluster's lane-line graphics and any ADRV lane-departure logic see "no lanes" while openpilot is
+active; the MDPS is unaffected because 0xCB carries neither field.
+
+## Standstill resume (0x10B) and cancel
+
+Stock ACC needs a RES press to resume after a stop. openpilot's resume path sent nothing on `CANFD_ALT_BUTTONS` cars
+(TODO in the controller). On the LX3 the press must be `WHEEL_BUTTONS_ALT` (0x10B) with byte 10 = 0x01, the 16-byte HKG
+checksum and a counter continuing the car's +2 sequence. Implemented: `create_wheel_buttons_alt` sends six frames
+(counter +2 … +12, a ~0.24 s press at the message's 25 Hz) on E-CAN when `cruiseControl.resume` is set; the panda TX list
+for the alt-wheel-buttons configuration adds 0x10B and the tx hook passes it only when byte 10 is exactly 0x01 and
+controls are allowed (SET, main, LFA and the unidentified 0x03 can never be injected). **Not yet driven.**
+
+Cancel: openpilot cancels stock ACC on `CANFD_ALT_BUTTONS` cars with an `SCC_CONTROL` (0x1A0) `ACCMode` 4 frame, but
+0x1A0 is not in the LKA-steer non-longitudinal TX list, so the panda blocks it: every cruise cancel on every route shows
+`safetyTxBlocked` +1 (233.55 s on `0000001b`, 678.25 s on `00000035`, …). A button cancel would need the 0x10B cancel
+code, which is still unidentified: byte 10 = 0x03 was seen 5× in Park with no cluster response and is gap or cancel.
+Test to resolve it: in Drive with ACC engaged, press gap once, wait 5 s, press cancel once; `SCC_CONTROL.DISTANCE_SETTING`
+/ CCNC `DISTANCE` will change on the gap press and `ACCMode` will go to 4 on cancel, and the byte-10 codes at those
+instants settle both. The main button (0x08) is a known fallback that turns ACC off entirely.
+
+## MDPS_ADAS_AciFltSig_Lv2 blips are engine auto start-stop restarts
+
+On `00000035` the flag went to 4 for a single frame at 490.43 and 589.84 s, both at 0 mph inside ACC stop-and-go holds,
+each producing an audible "Steering Assist Temporarily Unavailable". A bit scan of every E-CAN message finds the same
+set of ECU status bits flipping at 481.5/490.7, 558.3/590.1 and 653.7/654.8 s (0x6A byte 11, 0x100 byte 7, 0x260 byte
+26, 0x3E5 byte 11: none in the DBC), i.e. an engine stop a few seconds into each hold and a restart at its end, with
+the MDPS blip 0.3 s before each restart's status change (crank). The cluster's `ALERTS_4` = 81 "engine stopped by auto
+stop" never appears (that alert is HDP-specific). With no documented engine-state signal to gate on, the flag is now
+debounced to 0.1 s for the LX3 (`carstate_ext.py`); the genuine 1.9 s fault at MDPS power-up still passes.
+`MDPS_LkaFailSta` is not debounced.

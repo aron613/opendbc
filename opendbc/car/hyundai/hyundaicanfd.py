@@ -109,6 +109,16 @@ def create_buttons(packer, CP, CAN, cnt, btn):
   return packer.make_can_msg("CRUISE_BUTTONS", bus, values)
 
 
+def create_wheel_buttons_alt(packer, CAN, cnt):
+  # 2026 Palisade (LX3): RES press in WHEEL_BUTTONS_ALT (0x10B, E-CAN). The car's own stream steps the counter by 2, so
+  # the caller passes counters continuing that sequence; the packer computes the 16-byte HKG CAN-FD checksum.
+  values = {
+    "COUNTER": cnt & 0xFF,
+    "RES_ACCEL_BTN": 1,
+  }
+  return packer.make_can_msg("WHEEL_BUTTONS_ALT", CAN.ECAN, values)
+
+
 def create_acc_cancel(packer, CP, CAN, cruise_info_copy):
   # CAN FD camera-based SCC requires additional signals to be preserved
   # verbatim from the previous SCC_CONTROL frame to avoid checksum or

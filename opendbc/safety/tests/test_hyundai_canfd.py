@@ -742,6 +742,7 @@ class TestHyundaiCanfdLKASteeringAltAngleWheelButtons(TestHyundaiCanfdLKASteerin
   """
 
   SAFETY_PARAM_SP = HyundaiSafetyFlagsSP.CANFD_HALF_RATE_COUNTERS | HyundaiSafetyFlagsSP.CANFD_ALT_WHEEL_BUTTONS
+  TX_MSGS = [[0x110, 0], [0x1CF, 1], [0x362, 0], [0x10B, 1]]
 
   def _wheel_buttons_msg(self, values):
     # the car steps the counter by 2: burn one packer counter value per frame
@@ -878,6 +879,38 @@ class TestHyundaiCanfdLKASteeringAltAngleWheelButtons(TestHyundaiCanfdLKASteerin
       self.assertTrue(self._rx(common.make_msg(self.PT_BUS, 0x10b, 16, bytes.fromhex(frame))))
       self.assertEqual(self.safety.get_mads_button_press(), 0 if i == 0 else 1)
     self.assertTrue(self.safety.safety_config_valid())
+
+  def test_button_sends(self):
+    # a RES press on WHEEL_BUTTONS_ALT can be sent only while controls are allowed. CRUISE_BUTTONS (0x1CF) stays in
+    # the TX list from the common LKA-steer set and keeps its standard rule (the car ignores it); 0x1AA is never sent.
+    for controls_allowed in (False, True):
+      self.safety.set_controls_allowed(controls_allowed)
+      self.assertEqual(controls_allowed, self._tx(self._wheel_buttons_msg({"RES_ACCEL_BTN": 1})))
+      self.assertEqual(controls_allowed, self._tx(self._std_button_msg(Buttons.RESUME)))
+      self.assertFalse(self._tx(self._std_button_msg(Buttons.CANCEL)))
+      for btn in range(8):
+        self.assertFalse(self._tx(self._alt_buttons_msg(btn)))
+
+  def test_wheel_buttons_tx_only_resume_code(self):
+    self.safety.set_controls_allowed(True)
+    self.assertTrue(self._tx(self._wheel_buttons_msg({"RES_ACCEL_BTN": 1})))
+    for values in ({}, {"SET_DECEL_BTN": 1}, {"MAIN_BTN": 1}, {"LFA_BTN": 1},
+                   {"RES_ACCEL_BTN": 1, "SET_DECEL_BTN": 1}, {"RES_ACCEL_BTN": 1, "MAIN_BTN": 1}, {"RES_ACCEL_BTN": 1, "LFA_BTN": 1}):
+      self.assertFalse(self._tx(self._wheel_buttons_msg(values)), values)
+    # any other bit of byte 10 (e.g. the unidentified 0x04 position) is refused too
+    msg = self._wheel_buttons_msg({"RES_ACCEL_BTN": 1})
+    msg.data[10] |= 0x04
+    self.assertFalse(self._tx(msg))
+
+  def test_wheel_buttons_tx_refused_without_flag(self):
+    # the 0x1AA-only configuration must not accept a 0x10B send at all
+    self.safety.set_current_safety_param_sp(HyundaiSafetyFlagsSP.CANFD_HALF_RATE_COUNTERS)
+    self.safety.set_safety_hooks(CarParams.SafetyModel.hyundaiCanfd, HyundaiSafetyFlags.CANFD_LKA_STEER_MSG |
+                                 HyundaiSafetyFlags.CANFD_LKA_STEER_MSG_ALT | HyundaiSafetyFlags.CANFD_ANGLE_STEERING |
+                                 HyundaiSafetyFlags.CANFD_ALT_BUTTONS)
+    self.safety.init_tests()
+    self.safety.set_controls_allowed(True)
+    self.assertFalse(self._tx(self._wheel_buttons_msg({"RES_ACCEL_BTN": 1})))
 
   def test_wheel_buttons_flag_requires_alt_buttons_and_half_rate(self):
     # without the half-rate flag the wheel-buttons set is not installed: 0x10B is neither required nor read,

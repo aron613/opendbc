@@ -17,6 +17,14 @@
   {0x110, a_can, 32, .check_relay = (a_can) == 0},  /* LKAS_ALT */  \
   {0x362, a_can, 32, .check_relay = (a_can) == 0},  /* CAM_0x362 */ \
 
+// 2026 Palisade (LX3): the wheel buttons live in WHEEL_BUTTONS_ALT (0x10B, 16 bytes, E-CAN), so a standstill resume
+// has to be spoofed there instead of CRUISE_BUTTONS (0x1CF). The tx hook only lets byte 10 == 0x01 (RES, verified on
+// route 69fb86b6677ce882/00000008--c7bfd877d8: each press stepped the cluster set speed up) through, and only while
+// controls are allowed. No cancel is possible on this car yet: its cancel code is unidentified (0x03 is gap-or-cancel).
+#define HYUNDAI_CANFD_LKA_STEER_MSG_ALT_WHEEL_BUTTONS_COMMON_TX_MSGS(a_can, e_can) \
+  HYUNDAI_CANFD_LKA_STEER_MSG_ALT_COMMON_TX_MSGS(a_can, e_can)               \
+  {0x10B, e_can, 16, .check_relay = false},  /* WHEEL_BUTTONS_ALT */         \
+
 #define HYUNDAI_CANFD_LFA_STEERING_COMMON_TX_MSGS(e_can)  \
   {0x12A, e_can, 16, .check_relay = (e_can) == 0},  /* LFA */            \
   {0x1E0, e_can, 16, .check_relay = (e_can) == 0},  /* LFAHDA_CLUSTER */ \
@@ -276,6 +284,16 @@ static bool hyundai_canfd_tx_hook(const CANPacket_t *msg) {
     }
   }
 
+  // WHEEL_BUTTONS_ALT (0x10B) spoof, LX3 only (see HYUNDAI_CANFD_LKA_STEER_MSG_ALT_WHEEL_BUTTONS_COMMON_TX_MSGS): the whole
+  // button-ID byte must be exactly RES (0x01), so SET, main, LFA and the unidentified 0x03 can never be injected,
+  // and only while controls are allowed, matching the RES rule for 0x1CF above.
+  if (msg->addr == 0x10bU) {
+    const bool is_resume_only = (msg->data[10] == 0x01U);
+    if (!(hyundai_canfd_alt_wheel_buttons && is_resume_only && controls_allowed)) {
+      tx = false;
+    }
+  }
+
   // UDS: only tester present ("\x02\x3E\x80\x00\x00\x00\x00\x00") allowed on diagnostics address
   if (((msg->addr == 0x730U) && hyundai_canfd_lka_steer_msg) || ((msg->addr == 0x7D0U) && !hyundai_camera_scc)) {
     if ((GET_BYTES(msg, 0, 4) != 0x00803E02U) || (GET_BYTES(msg, 4, 4) != 0x0U)) {
@@ -327,6 +345,10 @@ static safety_config hyundai_canfd_init(uint16_t param) {
 
   static const CanMsg HYUNDAI_CANFD_LKA_STEER_MSG_ALT_TX_MSGS[] = {
     HYUNDAI_CANFD_LKA_STEER_MSG_ALT_COMMON_TX_MSGS(0, 1)
+  };
+
+  static const CanMsg HYUNDAI_CANFD_LKA_STEER_MSG_ALT_WHEEL_BUTTONS_TX_MSGS[] = {
+    HYUNDAI_CANFD_LKA_STEER_MSG_ALT_WHEEL_BUTTONS_COMMON_TX_MSGS(0, 1)
   };
 
   static const CanMsg HYUNDAI_CANFD_LKA_STEER_MSG_LONG_TX_MSGS[] = {
@@ -457,7 +479,9 @@ static safety_config hyundai_canfd_init(uint16_t param) {
       } else {
         SET_RX_CHECKS(hyundai_canfd_lka_steer_msg_rx_checks, ret);
       }
-      if (hyundai_canfd_lka_steer_msg_alt) {
+      if (hyundai_canfd_lka_steer_msg_alt && hyundai_canfd_alt_wheel_buttons) {
+        SET_TX_MSGS(HYUNDAI_CANFD_LKA_STEER_MSG_ALT_WHEEL_BUTTONS_TX_MSGS, ret);
+      } else if (hyundai_canfd_lka_steer_msg_alt) {
         SET_TX_MSGS(HYUNDAI_CANFD_LKA_STEER_MSG_ALT_TX_MSGS, ret);
       } else {
         SET_TX_MSGS(HYUNDAI_CANFD_LKA_STEER_MSG_TX_MSGS, ret);

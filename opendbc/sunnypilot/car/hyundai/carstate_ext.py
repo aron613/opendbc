@@ -13,6 +13,8 @@ from opendbc.car.hyundai.values import HyundaiFlags
 from opendbc.sunnypilot.car.hyundai.values import HyundaiFlagsSP
 from opendbc.sunnypilot.car.hyundai.adrv_relay import AdrvRelayWatchdog
 
+MDPS_ACI_FAULT_DEBOUNCE_FRAMES = 10  # 0.1 s at 100 Hz; the auto start-stop blips last one frame
+
 
 class CarStateExt:
   def __init__(self, CP, CP_SP):
@@ -25,6 +27,7 @@ class CarStateExt:
     # controller each frame so the ADRV relay watchdog below can compare it with what the MDPS actually received.
     self.op_lat_cmd = (0.0, 0.0, False)
     self.adrv_relay_watchdog = AdrvRelayWatchdog()
+    self.mdps_aci_fault_frames = 0
 
   def update_speed_limit(self, cp, cp_cam) -> float:
     speed_limit = 0
@@ -107,4 +110,13 @@ class CarStateExt:
       relay_fault = self.adrv_relay_watchdog.update(cmd_angle, cmd_gain, cmd_active,
                                                     relay["ADAS_StrAnglReqVal"], relay["ADAS_ACIAnglTqRedcGainVal"],
                                                     relay["ADAS_ActvACILvl2Sta"] == 2, ret.steeringPressed)
-      ret.steerFaultTemporary = ret.steerFaultTemporary or relay_fault
+      # 3. MDPS_ADAS_AciFltSig_Lv2 blips for a single frame during engine auto start-stop restarts at standstill: on
+      #    route 69fb86b6677ce882/00000035--a701ae3a3f both blips (490.43 and 589.84 s, 0 mph, ACC stop-and-go) sit
+      #    0.3 s before the same set of ECU status bits that flip at every engine restart, and each produced an
+      #    audible "Steering Assist Temporarily Unavailable". No documented engine-state signal exists in the CAN-FD
+      #    DBC to gate on, so require the flag to persist for 0.1 s instead; the genuine 1.9 s fault at MDPS power-up
+      #    still comes through. MDPS_LkaFailSta is not debounced.
+      aci_fault = cp.vl["MDPS"]["MDPS_ADAS_AciFltSig_Lv2"] != 0
+      self.mdps_aci_fault_frames = self.mdps_aci_fault_frames + 1 if aci_fault else 0
+      lka_fail = cp.vl["MDPS"]["MDPS_LkaFailSta"] != 0
+      ret.steerFaultTemporary = lka_fail or (self.mdps_aci_fault_frames >= MDPS_ACI_FAULT_DEBOUNCE_FRAMES) or relay_fault
