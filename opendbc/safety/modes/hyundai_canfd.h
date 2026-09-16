@@ -17,10 +17,12 @@
   {0x110, a_can, 32, .check_relay = (a_can) == 0},  /* LKAS_ALT */  \
   {0x362, a_can, 32, .check_relay = (a_can) == 0},  /* CAM_0x362 */ \
 
-// 2026 Palisade (LX3): the wheel buttons live in WHEEL_BUTTONS_ALT (0x10B, 16 bytes, E-CAN), so a standstill resume
-// has to be spoofed there instead of CRUISE_BUTTONS (0x1CF). The tx hook only lets byte 10 == 0x01 (RES, verified on
-// route 69fb86b6677ce882/00000008--c7bfd877d8: each press stepped the cluster set speed up) through, and only while
-// controls are allowed. No cancel is possible on this car yet: its cancel code is unidentified (0x03 is gap-or-cancel).
+// 2026 Palisade (LX3): the wheel buttons live in WHEEL_BUTTONS_ALT (0x10B, 16 bytes, E-CAN), so button spoofing goes
+// there instead of CRUISE_BUTTONS (0x1CF). Byte 10 is a button-ID byte: 0x01 = RES (route 69fb86b6677ce882/00000008:
+// each press stepped the cluster set speed up; route /00000037: six spoofed frames resumed the car from a 22 s ACC
+// hold), 0x08 = the cruise button, a toggle that engages ACC when off and turns ACC main off when engaged (route
+// /00000037 at 217.99 s). There is no separate cancel code; 0x03 is gap. The tx hook passes exactly 0x01 while
+// controls are allowed, and exactly 0x08 only while cruise is currently engaged (so it can only ever turn ACC off).
 #define HYUNDAI_CANFD_LKA_STEER_MSG_ALT_WHEEL_BUTTONS_COMMON_TX_MSGS(a_can, e_can) \
   HYUNDAI_CANFD_LKA_STEER_MSG_ALT_COMMON_TX_MSGS(a_can, e_can)               \
   {0x10B, e_can, 16, .check_relay = false},  /* WHEEL_BUTTONS_ALT */         \
@@ -284,12 +286,14 @@ static bool hyundai_canfd_tx_hook(const CANPacket_t *msg) {
     }
   }
 
-  // WHEEL_BUTTONS_ALT (0x10B) spoof, LX3 only (see HYUNDAI_CANFD_LKA_STEER_MSG_ALT_WHEEL_BUTTONS_COMMON_TX_MSGS): the whole
-  // button-ID byte must be exactly RES (0x01), so SET, main, LFA and the unidentified 0x03 can never be injected,
-  // and only while controls are allowed, matching the RES rule for 0x1CF above.
+  // WHEEL_BUTTONS_ALT (0x10B) spoof, LX3 only (see HYUNDAI_CANFD_LKA_STEER_MSG_ALT_WHEEL_BUTTONS_COMMON_TX_MSGS). The
+  // whole button-ID byte must be exactly RES (0x01, allowed while controls are allowed, like RES on 0x1CF) or exactly
+  // the cruise button (0x08, allowed only while cruise is currently engaged and controls are allowed, so it can only
+  // turn ACC off, never engage it). SET, LFA, gap (0x03) and any combination can never be injected.
   if (msg->addr == 0x10bU) {
-    const bool is_resume_only = (msg->data[10] == 0x01U);
-    if (!(hyundai_canfd_alt_wheel_buttons && is_resume_only && controls_allowed)) {
+    const bool is_resume = (msg->data[10] == 0x01U);
+    const bool is_cruise_off = (msg->data[10] == 0x08U) && cruise_engaged_prev;
+    if (!(hyundai_canfd_alt_wheel_buttons && controls_allowed && (is_resume || is_cruise_off))) {
       tx = false;
     }
   }

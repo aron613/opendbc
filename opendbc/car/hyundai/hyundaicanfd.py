@@ -1,7 +1,7 @@
 import numpy as np
 from opendbc.car import CanBusBase
 from opendbc.car.crc import CRC16_XMODEM
-from opendbc.car.hyundai.values import HyundaiFlags
+from opendbc.car.hyundai.values import HyundaiFlags, Buttons
 from opendbc.sunnypilot.car.hyundai.lead_data_ext import CanFdLeadData
 
 
@@ -80,7 +80,7 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
   return ret
 
 
-def create_suppress_lfa(packer, CAN, lfa_block_msg, lka_steering_alt, zero_lane_bytes=False):
+def create_suppress_lfa(packer, CAN, lfa_block_msg, lka_steering_alt):
   suppress_msg = "CAM_0x362" if lka_steering_alt else "CAM_0x2a4"
   msg_bytes = 32 if lka_steering_alt else 24
 
@@ -90,11 +90,6 @@ def create_suppress_lfa(packer, CAN, lfa_block_msg, lka_steering_alt, zero_lane_
   values["SET_ME_0_2"] = 0
   values["LEFT_LANE_LINE"] = 0
   values["RIGHT_LANE_LINE"] = 0
-  if zero_lane_bytes and lka_steering_alt:
-    # HDA suppression experiment B (2026 Palisade LX3): bytes 8 and 9 carry the same 2-bit lane-quality pattern as
-    # byte 7 (values 0x00-0x33 only, on both the LX3 and the Sportage HEV camera). Zero them as well.
-    values["BYTE8"] = 0
-    values["BYTE9"] = 0
   return packer.make_can_msg(suppress_msg, CAN.ACAN, values)
 
 
@@ -109,12 +104,15 @@ def create_buttons(packer, CP, CAN, cnt, btn):
   return packer.make_can_msg("CRUISE_BUTTONS", bus, values)
 
 
-def create_wheel_buttons_alt(packer, CAN, cnt):
-  # 2026 Palisade (LX3): RES press in WHEEL_BUTTONS_ALT (0x10B, E-CAN). The car's own stream steps the counter by 2, so
-  # the caller passes counters continuing that sequence; the packer computes the 16-byte HKG CAN-FD checksum.
+def create_wheel_buttons_alt(packer, CAN, cnt, btn):
+  # 2026 Palisade (LX3): button press in WHEEL_BUTTONS_ALT (0x10B, E-CAN). Byte 10 is a button-ID byte: RES_ACCEL is
+  # 0x01 (resume from a standstill) and the cruise button 0x08 is a toggle that turns ACC main off while engaged (there
+  # is no separate cancel button on this car). The car's own stream steps the counter by 2, so the caller passes
+  # counters continuing that sequence; the packer computes the 16-byte HKG CAN-FD checksum.
   values = {
     "COUNTER": cnt & 0xFF,
-    "RES_ACCEL_BTN": 1,
+    "RES_ACCEL_BTN": 1 if btn == Buttons.RES_ACCEL else 0,
+    "MAIN_BTN": 1 if btn == Buttons.CANCEL else 0,
   }
   return packer.make_can_msg("WHEEL_BUTTONS_ALT", CAN.ECAN, values)
 

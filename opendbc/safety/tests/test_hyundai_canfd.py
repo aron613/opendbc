@@ -881,26 +881,43 @@ class TestHyundaiCanfdLKASteeringAltAngleWheelButtons(TestHyundaiCanfdLKASteerin
     self.assertTrue(self.safety.safety_config_valid())
 
   def test_button_sends(self):
-    # a RES press on WHEEL_BUTTONS_ALT can be sent only while controls are allowed. CRUISE_BUTTONS (0x1CF) stays in
-    # the TX list from the common LKA-steer set and keeps its standard rule (the car ignores it); 0x1AA is never sent.
-    for controls_allowed in (False, True):
-      self.safety.set_controls_allowed(controls_allowed)
-      self.assertEqual(controls_allowed, self._tx(self._wheel_buttons_msg({"RES_ACCEL_BTN": 1})))
-      self.assertEqual(controls_allowed, self._tx(self._std_button_msg(Buttons.RESUME)))
-      self.assertFalse(self._tx(self._std_button_msg(Buttons.CANCEL)))
-      for btn in range(8):
-        self.assertFalse(self._tx(self._alt_buttons_msg(btn)))
+    # RES on WHEEL_BUTTONS_ALT only while controls are allowed; the cruise button (0x08, turns ACC off) only while
+    # cruise is engaged as well. CRUISE_BUTTONS (0x1CF) stays in the TX list from the common LKA-steer set and keeps
+    # its standard rule (the car ignores it); 0x1AA is never sent.
+    for cruise_engaged in (False, True):
+      self._rx(self._pcm_status_msg(cruise_engaged))
+      for controls_allowed in (False, True):
+        self.safety.set_controls_allowed(controls_allowed)
+        self.assertEqual(controls_allowed, self._tx(self._wheel_buttons_msg({"RES_ACCEL_BTN": 1})), (cruise_engaged, controls_allowed))
+        self.assertEqual(controls_allowed and cruise_engaged, self._tx(self._wheel_buttons_msg({"MAIN_BTN": 1})), (cruise_engaged, controls_allowed))
+        self.assertEqual(controls_allowed, self._tx(self._std_button_msg(Buttons.RESUME)))
+        for btn in range(8):
+          self.assertFalse(self._tx(self._alt_buttons_msg(btn)))
 
-  def test_wheel_buttons_tx_only_resume_code(self):
+  def test_wheel_buttons_tx_codes(self):
+    # with cruise engaged and controls allowed, exactly 0x01 and exactly 0x08 pass; nothing else does
+    self._rx(self._pcm_status_msg(True))
     self.safety.set_controls_allowed(True)
     self.assertTrue(self._tx(self._wheel_buttons_msg({"RES_ACCEL_BTN": 1})))
-    for values in ({}, {"SET_DECEL_BTN": 1}, {"MAIN_BTN": 1}, {"LFA_BTN": 1},
-                   {"RES_ACCEL_BTN": 1, "SET_DECEL_BTN": 1}, {"RES_ACCEL_BTN": 1, "MAIN_BTN": 1}, {"RES_ACCEL_BTN": 1, "LFA_BTN": 1}):
+    self.assertTrue(self._tx(self._wheel_buttons_msg({"MAIN_BTN": 1})))
+    for values in ({}, {"SET_DECEL_BTN": 1}, {"LFA_BTN": 1}, {"RES_ACCEL_BTN": 1, "SET_DECEL_BTN": 1},
+                   {"RES_ACCEL_BTN": 1, "MAIN_BTN": 1}, {"RES_ACCEL_BTN": 1, "LFA_BTN": 1}, {"MAIN_BTN": 1, "LFA_BTN": 1}):
       self.assertFalse(self._tx(self._wheel_buttons_msg(values)), values)
-    # any other bit of byte 10 (e.g. the unidentified 0x04 position) is refused too
-    msg = self._wheel_buttons_msg({"RES_ACCEL_BTN": 1})
-    msg.data[10] |= 0x04
-    self.assertFalse(self._tx(msg))
+    # any other bit of byte 10 (e.g. the unused 0x04 position) is refused too
+    for base in ({"RES_ACCEL_BTN": 1}, {"MAIN_BTN": 1}):
+      msg = self._wheel_buttons_msg(base)
+      msg.data[10] |= 0x04
+      self.assertFalse(self._tx(msg))
+
+  def test_wheel_buttons_cruise_off_never_engages(self):
+    # the cruise button is a toggle on the car: with ACC off it would engage, so it must be refused then
+    self._rx(self._pcm_status_msg(False))
+    self.safety.set_controls_allowed(True)
+    self.assertFalse(self._tx(self._wheel_buttons_msg({"MAIN_BTN": 1})))
+    self._rx(self._pcm_status_msg(True))
+    self.assertTrue(self._tx(self._wheel_buttons_msg({"MAIN_BTN": 1})))
+    self._rx(self._pcm_status_msg(False))
+    self.assertFalse(self._tx(self._wheel_buttons_msg({"MAIN_BTN": 1})))
 
   def test_wheel_buttons_tx_refused_without_flag(self):
     # the 0x1AA-only configuration must not accept a 0x10B send at all

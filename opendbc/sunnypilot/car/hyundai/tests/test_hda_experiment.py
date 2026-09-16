@@ -5,7 +5,7 @@ from opendbc.can.parser import CANParser
 from opendbc.car import Bus, structs
 from opendbc.car.hyundai import hyundaicanfd
 from opendbc.car.hyundai.hyundaicanfd import CanBus
-from opendbc.car.hyundai.values import CAR, DBC, HyundaiFlags
+from opendbc.car.hyundai.values import CAR, DBC, HyundaiFlags, Buttons
 
 
 def make_cp():
@@ -47,23 +47,22 @@ class TestHdaSuppressionExperiment(unittest.TestCase):
     self.assertEqual(exp["LKAS_ANGLE_ACTIVE"], 2)
     self.assertAlmostEqual(exp["ADAS_StrAnglReqVal"], 12.3, places=1)
 
-  def _suppress(self, zero):
+  def test_suppress_lfa_zeroes_byte_7_lane_fields_only(self):
     block = {f"BYTE{i}": 0x33 for i in range(3, 32)}
     block["COUNTER"] = 7
-    addr, dat, bus = hyundaicanfd.create_suppress_lfa(self.packer, self.CAN, block, True, zero_lane_bytes=zero)
+    addr, dat, bus = hyundaicanfd.create_suppress_lfa(self.packer, self.CAN, block, True)
     self.assertEqual((addr, bus), (0x362, self.CAN.ACAN))
-    return dat
+    self.assertEqual(dat[7], 0)
+    for i in range(8, 32):
+      self.assertEqual(dat[i], 0x33, i)
 
-  def test_experiment_b_zeroes_bytes_8_and_9_too(self):
-    base = self._suppress(False)
-    exp = self._suppress(True)
-    self.assertEqual(base[7], 0)               # byte 7 lane fields always zeroed
-    self.assertEqual((base[8], base[9]), (0x33, 0x33))
-    self.assertEqual((exp[7], exp[8], exp[9]), (0, 0, 0))
-    # every other payload byte copied through unchanged in both
-    for i in range(10, 32):
-      self.assertEqual(base[i], 0x33, i)
-      self.assertEqual(exp[i], 0x33, i)
+  def test_wheel_button_frames(self):
+    for btn, expected in ((Buttons.RES_ACCEL, 0x01), (Buttons.CANCEL, 0x08)):
+      addr, dat, bus = hyundaicanfd.create_wheel_buttons_alt(self.packer, self.CAN, 16, btn)
+      self.assertEqual((addr, bus), (0x10B, self.CAN.ECAN))
+      self.assertEqual(dat[2], 16)
+      self.assertEqual(dat[10], expected, btn)
+      self.assertEqual(sum(dat[3:10]) + sum(dat[11:]), 0)
 
 
 if __name__ == "__main__":

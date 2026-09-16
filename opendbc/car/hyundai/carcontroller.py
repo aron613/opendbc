@@ -311,8 +311,7 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
     # prevent LFA from activating on LKA steering cars by sending "no lane lines detected" to ADAS ECU
     if self.frame % 5 == 0 and lka_steering:
       can_sends.append(hyundaicanfd.create_suppress_lfa(self.packer, self.CAN, CS.lfa_block_msg,
-                                                        self.CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG_ALT,
-                                                        zero_lane_bytes=bool(self.CP_SP.flags & HyundaiFlagsSP.CANFD_HDA_EXP_LANE_BYTES)))
+                                                        self.CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG_ALT))
 
     # LFA and HDA icons
     if self.frame % 5 == 0 and (not lka_steering or lka_steering_long):
@@ -337,7 +336,15 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
         # cruise cancel
         if CC.cruiseControl.cancel:
           # Here we send ACC message to cancel, not buttons. Don't delay
-          if self.CP.flags & HyundaiFlags.CANFD_ALT_BUTTONS:
+          if self.CP.flags & HyundaiFlags.CANFD_ALT_WHEEL_BUTTONS:
+            # LX3: the SCC_CONTROL cancel frame is not in this configuration's panda TX list (it was blocked on every
+            # cancel), and the car has no cancel button code: the cruise button (0x08) turns ACC main off while
+            # engaged. Send it after the usual delay so a brake cancel that is already in progress never triggers it.
+            if self.cancel_counter > CANCEL_BUTTON_DELAY_FRAMES:
+              for i in range(1, 7):
+                can_sends.append(hyundaicanfd.create_wheel_buttons_alt(self.packer, self.CAN, int(CS.buttons_counter) + 2 * i, Buttons.CANCEL))
+              self.last_button_frame = self.frame
+          elif self.CP.flags & HyundaiFlags.CANFD_ALT_BUTTONS:
             can_sends.append(hyundaicanfd.create_acc_cancel(self.packer, self.CP, self.CAN, CS.cruise_info))
             self.last_button_frame = self.frame
           elif self.cancel_counter > CANCEL_BUTTON_DELAY_FRAMES:
@@ -351,7 +358,7 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
             # LX3: spoof a ~0.24 s RES press on WHEEL_BUTTONS_ALT (6 frames at the message's 25 Hz), continuing the
             # car's +2 counter sequence. The panda only passes byte 10 == 0x01 while controls are allowed.
             for i in range(1, 7):
-              can_sends.append(hyundaicanfd.create_wheel_buttons_alt(self.packer, self.CAN, int(CS.buttons_counter) + 2 * i))
+              can_sends.append(hyundaicanfd.create_wheel_buttons_alt(self.packer, self.CAN, int(CS.buttons_counter) + 2 * i, Buttons.RES_ACCEL))
             self.last_button_frame = self.frame
           elif self.CP.flags & HyundaiFlags.CANFD_ALT_BUTTONS:
             # TODO: resume for alt button cars

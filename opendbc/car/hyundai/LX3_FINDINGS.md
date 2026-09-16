@@ -355,3 +355,36 @@ the MDPS blip 0.3 s before each restart's status change (crank). The cluster's `
 stop" never appears (that alert is HDP-specific). With no documented engine-state signal to gate on, the flag is now
 debounced to 0.1 s for the LX3 (`carstate_ext.py`); the genuine 1.9 s fault at MDPS power-up still passes.
 `MDPS_LkaFailSta` is not debounced.
+
+## Route `00000037--c6c04f2038` (2026-09-16): resume verified, button codes complete, HDA suppression is now default
+
+**Standstill resume works.** After a 22 s ACC hold behind a stopped lead, openpilot requested resume at 195.78 s, six
+`WHEEL_BUTTONS_ALT` frames with byte 10 = 0x01 and counters 16…26 went out at 195.79 s (all six echoed, nothing blocked),
+the ADRV cleared `CRUISE_STANDSTILL` at 195.89 s, the engine restarted and the car was rolling 2.5 s later with no
+driver input. Second clean drive with HDA suppression: 183 s active under ACC, relay |angle diff| 0.09° / 0.17° mean per
+window, gain diff ≤ 0.08, `HDA_ICON` never lit, watchdog silent, two automatic lane changes under ACC. The debounced
+MDPS fault flag suppressed two start-stop blips (37.4 s before drive-off, 196.0 s at the resume restart).
+
+**Complete `WHEEL_BUTTONS_ALT` (0x10B) byte-10 table:**
+
+| Byte 10 | Bit | Button | Evidence |
+|---|---|---|---|
+| 0x01 | 80 | RES + | cluster set speed +1 per press; six spoofed frames resume the car |
+| 0x02 | 81 | SET − | cluster set speed −1 per press |
+| 0x03 | 80+81 | **gap** | `SCC_CONTROL.DISTANCE_SETTING` 2→1 and cluster `DISTANCE` 2→1 at 209.9 s |
+| 0x08 | 83 | **cruise button, a toggle** | press while off: `MainMode_ACC` + `ACCMode` → 1 (engage); press while engaged: `MainMode_ACC` → 0 (ACC off entirely, 217.99 s). There is no separate cancel code on this car. |
+| 0x80 | 87 | LFA | the car's own `LFA_ICON` toggles after every pulse |
+
+**Now default:** `HyundaiLx3HdaSuppressionExperiment` defaults to 1 ("LX3 HDA Suppression": On), Off (0) stays
+selectable; values 2/3 (the removed B/C experiments) are treated as Off. The ADRV relay watchdog is unchanged.
+
+**Cancel via the cruise button.** The `SCC_CONTROL` cancel frame was never in this configuration's panda TX list. openpilot
+now sends six 0x10B frames with byte 10 = 0x08 instead, after the same 100 ms delay as the 0x1CF path so a driver's brake
+cancel already in progress never triggers it. Because that button is a toggle, the panda passes 0x08 only while cruise
+is currently engaged (`cruise_engaged_prev`) and controls are allowed, so a spoofed frame can only ever turn ACC off.
+Effect in the car: an openpilot cancel turns ACC main off (the driver presses the cruise button once to re-engage),
+which is exactly what the driver's own press does. openpilot requests a cancel whenever the car reports ACC engaged
+while openpilot is not enabled (`cruiseControl.cancel = cruiseState.enabled and not enabled`): after a soft or
+immediate disable while cruising (driver-monitoring escalation, the relay watchdog's steer fault, controls mismatch),
+or when a no-entry (seatbelt, door, calibration, …) keeps openpilot from enabling at the moment ACC is engaged. **Not
+yet driven.**
