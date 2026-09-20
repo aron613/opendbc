@@ -312,7 +312,11 @@ and the watchdog trips within 0.3 s of engaging: lateral drops with an alert, wh
 camera→ADRV message the MDPS never sees; byte 7 has been zeroed on every drive so far, and bytes 8/9 carry the same
 0x00-0x33 two-bit pattern, so blanking them can only change what the ADRV believes about lanes, with the same failure mode.
 
-## Exp A result (`00000035--a701ae3a3f`, 2026-09-15): stock cruise + openpilot lateral works
+## Exp A result (`00000035--a701ae3a3f`, 2026-09-15): stock cruise + openpilot lateral works — **corrected below**
+
+> **Correction (2026-09-20, from route `00000050`):** this section's conclusion was wrong. Both "clean" Exp A drives
+> (`00000035`, `00000037`) were on roads the ADRV's navigation does not consider HDA-eligible, so nothing was being
+> suppressed; Exp A was never tested where HDA would have armed. See "What actually triggers the HDA takeover" below.
 
 `carParamsSP.hdaSuppressionExperiment` = 1. Two ACC-on windows (470.8-678.2 s and 696.9-718.7 s), openpilot active for
 142 s of them, hands off 134 s. The ADRV kept relaying our 0x110 onto 0xCB the whole time: |angle diff| 0.22° mean /
@@ -320,7 +324,7 @@ camera→ADRV message the MDPS never sees; byte 7 has been zeroed on every drive
 transition, `HDA_ICON` never lit, watchdog silent (longest mismatch streak 5 frames), and both brake cancels left the
 steering running. The relayed 0x12A carried `LKA_RcgSta` 0 / `LKA_SysIndReq` 1 all drive.
 
-**Conclusion:** the ADRV arms HDA from what our 0x110 reports about LFA state (in Route B the fields flipped to
+**Conclusion (superseded, kept for the record):** the ADRV arms HDA from what our 0x110 reports about LFA state (in Route B the fields flipped to
 `LKA_RcgSta` 3 / `LKA_SysIndReq` 2 at the moment openpilot became PCM-enabled and HDA armed 100 ms later), not from
 lane data: the 0x362 spoof was identical in both drives. Exp A changes both fields at once, so which one is the trigger
 is not isolated; a SysIndReq-only variant would tell. Exp B and C are not needed for function. Plan: two more clean A
@@ -388,3 +392,45 @@ while openpilot is not enabled (`cruiseControl.cancel = cruiseState.enabled and 
 immediate disable while cruising (driver-monitoring escalation, the relay watchdog's steer fault, controls mismatch),
 or when a no-entry (seatbelt, door, calibration, …) keeps openpilot from enabling at the moment ACC is engaged. **Not
 yet driven.**
+
+## What actually triggers the HDA takeover (`00000050--7fc69936d8`, 2026-09-19): navigation, not our LFA status
+
+HDA suppression on (default). Seven ACC engagements on the Bay Ridge loop; three ran clean, the rest ended in the relay
+watchdog's steer fault with the green (stock) wheel on the cluster. The difference is the road, not anything openpilot
+sent:
+
+- Within 0.11 s of every ACC engage the cluster message `LFAHDA_CLUSTER` (0x1E0, E-CAN, 20 Hz) either lit `HDA_ICON`
+  (with `NAV_ICON` 2 or 4) or stayed dark. On the engagements where it lit, the ADRV took the steering the moment speed
+  passed ~11 mph (first takeover at +14.8 s / 11.3 mph after a standstill engage): it substituted its own 0xCB, set
+  `LKA_RcgSta` 3 in the relayed 0x12A and `LFA_ICON` 2, and the watchdog tripped. Route `00000018` had the same shape
+  (icon at +0.1 s, takeover at +0.2-1.0 s because the car was already at 15-30 mph). On the engagements where it stayed
+  dark it never took over, exactly like `00000035` and `00000037`.
+- Our 0x110 was identical in both cases: `LKA_RcgSta` 0 / `LKA_SysIndReq` 1 (Exp A), same 0x362 spoof, same gain and
+  angle. Exp A therefore has **no causal effect on HDA**: the ADRV arms it when its own navigation decides the road
+  qualifies (`HDA_ICON` is that decision made visible), and takes over lateral above ~11 mph regardless of what we
+  report. `00000035`/`00000037` were on non-eligible roads, which is why they looked like a success.
+- **Stock LFA stayed alive after every handoff.** After the takeover the ADRV's own LFA kept steering the car through
+  the ACC cancel and until shutdown (282.4-317 s), because our inactive 0x110 still reported `LKA_SysIndReq` 1. The
+  stock camera sends 0 with LFA off and 1 only while the driver has LFA on (`00000008--c7bfd877d8`: 0 throughout, 1
+  from 228.94 to 232.57 s with `LFA_ICON` 1; 1 during ACC-engaged in `00000050`), 2 active, 4 warning.
+
+**Current mitigation (build after f7188a8305): the HDA-road gate.** `carstate_ext` reads `LFAHDA_CLUSTER.HDA_ICON`
+(0x1E0 verified parse-safe: 16 bytes, 20 Hz, counter +1 on 6359/6359 frames, checksum valid on every frame). While
+`cruiseState.enabled` and the icon is lit, `carStateSP.hdaRoadActive` goes true and MADS pauses lateral with the same
+silent-pause handoff as the stock-cruise gate, under the alert "HDA road, stock lane centering / openpilot steering
+paused" (`EventNameSP.hdaRoadLateral`, a no-entry while it lasts; an LFA press is refused with "openpilot Unavailable /
+Cancel cruise to resume steering"). The yield happens at ACC engage, ~15 s before the ADRV would have taken over from a
+standstill, so the handoff is at the ADRV's own choosing rather than a watchdog trip. Lateral resumes on its own when
+ACC is canceled (icon goes dark). `stockLateralActive` (the Off-suppression gate) is unchanged and is now also false
+while the HDA-road gate holds, so only one pause event is raised at a time. The relay watchdog stays armed as the
+backstop for a takeover the icon does not announce.
+
+**LFA-off fix (same build).** While openpilot lateral is inactive the LX3 now sends `LKA_SysIndReq` 0 in 0x110, the
+value the stock camera sends with LFA off, so after any handoff the ADRV's LFA should drop out once ACC is canceled
+instead of steering until shutdown. Active behavior is unchanged (Exp A still reports 0 / 1 while active).
+
+**Next attempt at real suppression: Experiment D** (deferred). Report `LKA_SysIndReq` 0 ("LFA off") while openpilot
+lateral is *active* too, with the HDA-road gate disabled for that test, to see whether the ADRV declines to arm HDA
+when it believes LFA is switched off. Unknown risks: the ADRV may drop the 0xCB relay when LFA reads off, in which case
+the MDPS stops steering and the watchdog trips immediately; parked test first.
+

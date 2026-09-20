@@ -36,7 +36,8 @@ class CanBus(CanBusBase):
     return self._cam
 
 
-def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque, apply_angle, lkas_icon, hide_lfa_status=False):
+def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque, apply_angle, lkas_icon, hide_lfa_status=False,
+                             lfa_off_when_inactive=False):
   values = {
     "LKA_OptUsmSta": 2,
     "LKA_SysIndReq": 2 if enabled else 1,
@@ -62,11 +63,19 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
     }
 
     if hide_lfa_status:
-      # HDA suppression experiment A (2026 Palisade LX3): keep the angle request but do not report "lane recognized"
-      # or "LFA active" to the ADAS ECU. Neither signal is carried in the LFA_ALT (0xCB) relay the MDPS steers to; they
-      # go to the ADRV/cluster via LFA (0x12A), and the theory is that they are what arms stock HDA when ACC engages.
+      # 2026 Palisade LX3: keep the angle request but do not report "lane recognized" or "LFA active" to the ADAS ECU.
+      # Neither signal is carried in the LFA_ALT (0xCB) relay the MDPS steers to; they go to the ADRV/cluster via LFA
+      # (0x12A). Note: this does NOT stop the ADRV from arming HDA on roads its navigation marks as HDA-eligible
+      # (route 69fb86b6677ce882/00000050), see LX3_FINDINGS.md.
       values["LKA_RcgSta"] = 0
       values["LKA_SysIndReq"] = 1
+
+    if lfa_off_when_inactive and not lat_active:
+      # 2026 Palisade LX3: report LFA switched off while openpilot lateral is inactive. LKA_SysIndReq 0 is what the
+      # stock camera sends with LFA off (route 69fb86b6677ce882/00000008--c7bfd877d8: 0 throughout, 1 only from
+      # 228.94 to 232.57 s while the driver had LFA on). With 1 left in place after a handoff the ADRV kept its own LFA
+      # steering the car through an ACC cancel until shutdown (route /00000050, 282.4-317 s).
+      values["LKA_SysIndReq"] = 0
 
   ret = []
   if CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG:

@@ -29,8 +29,9 @@ class TestHdaSuppressionExperiment(unittest.TestCase):
     self.packer = CANPacker(self.dbc)
     self.CAN = CanBus(self.CP, lka_steering=True)
 
-  def _lkas(self, hide):
-    msgs = hyundaicanfd.create_steering_messages(self.packer, self.CP, self.CAN, True, True, 0.5, 12.3, 2, hide_lfa_status=hide)
+  def _lkas(self, hide, lat_active=True, lfa_off=False):
+    msgs = hyundaicanfd.create_steering_messages(self.packer, self.CP, self.CAN, True, lat_active, 0.5, 12.3, 2,
+                                                 hide_lfa_status=hide, lfa_off_when_inactive=lfa_off)
     self.assertEqual(len(msgs), 1)
     addr, dat, bus = msgs[0]
     self.assertEqual((addr, bus), (0x110, self.CAN.ACAN))
@@ -46,6 +47,17 @@ class TestHdaSuppressionExperiment(unittest.TestCase):
       self.assertEqual(base[k], exp[k], k)
     self.assertEqual(exp["LKAS_ANGLE_ACTIVE"], 2)
     self.assertAlmostEqual(exp["ADAS_StrAnglReqVal"], 12.3, places=1)
+
+  def test_lfa_off_when_inactive(self):
+    # inactive: SysIndReq 0 (what the stock camera sends with LFA off); active: unchanged
+    for hide in (False, True):
+      inactive = self._lkas(hide, lat_active=False, lfa_off=True)
+      self.assertEqual(inactive["LKA_SysIndReq"], 0, hide)
+      self.assertEqual(inactive["LKAS_ANGLE_ACTIVE"], 1)
+      active = self._lkas(hide, lat_active=True, lfa_off=True)
+      self.assertEqual(active["LKA_SysIndReq"], 1 if hide else 2, hide)
+      # without the flag the inactive value is the stock one, which follows `enabled` (2 here), never 0
+      self.assertEqual(self._lkas(hide, lat_active=False, lfa_off=False)["LKA_SysIndReq"], 1 if hide else 2)
 
   def test_suppress_lfa_zeroes_byte_7_lane_fields_only(self):
     block = {f"BYTE{i}": 0x33 for i in range(3, 32)}

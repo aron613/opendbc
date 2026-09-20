@@ -168,3 +168,4 @@ class CarControlSP:
 class CarStateSP:
   speedLimit: float = auto_field()
   stockLateralActive: bool = auto_field()  # the car's own lane centering owns the steering; openpilot lateral must yield
+  hdaRoadActive: bool = auto_field()  # the ADAS ECU reports HDA available on this road while ACC is engaged; lateral yields before it takes over
