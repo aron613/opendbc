@@ -29,9 +29,9 @@ class TestHdaSuppressionExperiment(unittest.TestCase):
     self.packer = CANPacker(self.dbc)
     self.CAN = CanBus(self.CP, lka_steering=True)
 
-  def _lkas(self, hide, lat_active=True, lfa_off=False):
+  def _lkas(self, hide, lat_active=True, lfa_off=False, lfa_button=False):
     msgs = hyundaicanfd.create_steering_messages(self.packer, self.CP, self.CAN, True, lat_active, 0.5, 12.3, 2,
-                                                 hide_lfa_status=hide, lfa_off_when_inactive=lfa_off)
+                                                 hide_lfa_status=hide, lfa_off_when_inactive=lfa_off, lfa_button=lfa_button)
     self.assertEqual(len(msgs), 1)
     addr, dat, bus = msgs[0]
     self.assertEqual((addr, bus), (0x110, self.CAN.ACAN))
@@ -58,6 +58,17 @@ class TestHdaSuppressionExperiment(unittest.TestCase):
       self.assertEqual(active["LKA_SysIndReq"], 1 if hide else 2, hide)
       # without the flag the inactive value is the stock one, which follows `enabled` (2 here), never 0
       self.assertEqual(self._lkas(hide, lat_active=False, lfa_off=False)["LKA_SysIndReq"], 1 if hide else 2)
+
+  def test_lfa_button_spoof_sets_only_that_bit(self):
+    # the camera's LFA button pulse: the one input that switches the car's own lane centering off
+    for lat_active in (True, False):
+      off = self._lkas(True, lat_active=lat_active, lfa_off=True)
+      on = self._lkas(True, lat_active=lat_active, lfa_off=True, lfa_button=True)
+      self.assertEqual(off["LFA_BUTTON"], 0)
+      self.assertEqual(on["LFA_BUTTON"], 1)
+      skip = ("LFA_BUTTON", "CHECKSUM", "COUNTER")  # the packer advances the counter between the two calls
+      self.assertEqual({k: v for k, v in on.items() if k not in skip},
+                       {k: v for k, v in off.items() if k not in skip})
 
   def test_suppress_lfa_zeroes_byte_7_lane_fields_only(self):
     block = {f"BYTE{i}": 0x33 for i in range(3, 32)}

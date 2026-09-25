@@ -117,11 +117,61 @@ class TestAdrvRelayWatchdog(unittest.TestCase):
     self.assertTrue(self._run(wd, HOLD_FRAMES - 1, (0.0, 0.0), (0.0, 0.0), cmd_active=False))
     self.assertFalse(self._run(wd, 1, (0.0, 0.0), (0.0, 0.0), cmd_active=False))
 
+  def test_hold_latches_while_the_relay_still_holds_the_wheel(self):
+    # route 69fb86b6677ce882/0000005e--ef39be0c84: after the handoff the ADRV kept 0xCB active with its own 0.4-0.6
+    # gain while our lateral was dropped. The hold must not run out there, or lateral re-arms into the fight.
+    wd = AdrvRelayWatchdog()
+    self._settle(wd, 8.6, 0.28)
+    self.assertTrue(self._run(wd, PERSIST_FRAMES, (8.6, 0.28), (1.4, 0.01)))
+    self.assertTrue(self._run(wd, HOLD_FRAMES * 4, (0.0, 0.0), (5.0, 0.50), cmd_active=False))
+    self.assertFalse(wd.relay_idle)
+    # ...and clears HOLD_FRAMES after it finally lets go
+    self.assertTrue(self._run(wd, HOLD_FRAMES - 1, (0.0, 0.0), (5.0, 0.0), cmd_active=False))
+    self.assertFalse(self._run(wd, 1, (0.0, 0.0), (5.0, 0.0), cmd_active=False))
+
+  def test_relay_inactive_counts_as_idle_even_with_stale_gain(self):
+    wd = AdrvRelayWatchdog()
+    self._settle(wd, 8.6, 0.28)
+    self.assertTrue(self._run(wd, PERSIST_FRAMES, (8.6, 0.28), (1.4, 0.01)))
+    self.assertTrue(self._run(wd, HOLD_FRAMES - 1, (0.0, 0.0), (0.0, 0.60), cmd_active=False, relay_active=False))
+    self.assertFalse(self._run(wd, 1, (0.0, 0.0), (0.0, 0.60), cmd_active=False, relay_active=False))
+
   def test_hold_extends_while_mismatch_continues(self):
     wd = AdrvRelayWatchdog()
     self._settle(wd, 8.6, 0.28)
     self._run(wd, PERSIST_FRAMES + HOLD_FRAMES, (8.6, 0.28), (1.4, 0.01))
     self.assertTrue(wd.fault)
+
+
+class TestRelayFaultSuppressesCancel(unittest.TestCase):
+  """openpilot must not turn the driver's ACC off because of this fault: the fault means the stock system holds the
+  steering, and canceling ACC does not give it back. Route 69fb86b6677ce882/0000005e--ef39be0c84 did it twice."""
+  def setUp(self):
+    from opendbc.car import structs
+    from opendbc.car.hyundai.interface import CarInterface
+    from opendbc.car.hyundai.values import CAR, HyundaiFlags
+    self.structs = structs
+    CP = CarInterface.get_non_essential_params(CAR.HYUNDAI_PALISADE_LX3)
+    CP.flags |= (HyundaiFlags.CANFD_LKA_STEER_MSG | HyundaiFlags.CANFD_LKA_STEER_MSG_ALT).value
+    self.CI = CarInterface(CP, CarInterface.get_non_essential_params_sp(CP, CAR.HYUNDAI_PALISADE_LX3))
+
+  def _cancel_frames(self, fault, n=60):
+    sends = []
+    for _ in range(n):
+      self.CI.update([])
+      self.CI.CS.adrv_relay_watchdog.hold_frames = HOLD_FRAMES if fault else 0
+      CC = self.structs.CarControl()
+      CC.cruiseControl.cancel = True
+      _, s = self.CI.apply(CC.as_reader(), self.structs.CarControlSP(), 0)
+      sends += [m for m in s if m[0] == 0x10B]
+    return sends
+
+  def test_no_cancel_button_while_the_relay_fault_is_up(self):
+    self.assertEqual(self._cancel_frames(True), [])
+
+  def test_cancel_button_still_sent_otherwise(self):
+    # one burst of six 0x10B frames, once the 0.25 s button rate limit and the 0.1 s brake-cancel delay have passed
+    self.assertEqual(len(self._cancel_frames(False, n=40)), 6)
 
 
 if __name__ == "__main__":

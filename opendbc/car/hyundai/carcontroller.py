@@ -16,6 +16,7 @@ from opendbc.sunnypilot.car.hyundai.icbm import IntelligentCruiseButtonManagemen
 from opendbc.sunnypilot.car.hyundai.longitudinal.controller import LongitudinalController
 from opendbc.sunnypilot.car.hyundai.lead_data_ext import LeadDataCarController
 from opendbc.sunnypilot.car.hyundai.mads import MadsCarController
+from opendbc.sunnypilot.car.hyundai.stock_lfa import StockLfaDisabler
 from opendbc.sunnypilot.car.hyundai.values import HyundaiFlagsSP
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
@@ -140,6 +141,9 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
     self.last_button_frame = 0
     self.cancel_counter = 0
 
+    self.stock_lfa = StockLfaDisabler()
+    self.stock_lfa_button = False
+
     self.apply_angle_last = 0
 
   def update(self, CC, CC_SP, CS, now_nanos):
@@ -198,6 +202,16 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
     self.apply_torque_last = apply_torque
     # for the ADRV relay watchdog in carstate_ext (angle-steering cars): what we are about to put on the bus
     CS.op_lat_cmd = (self.apply_angle_last, self.apply_torque_last, bool(apply_steer_req))
+
+    # 2026 Palisade LX3: the car's own lane centering switches itself on when the ADRV arms HDA and then stays on for
+    # the rest of the drive, because the only input that toggles it is the camera's LKAS_ALT.LFA_BUTTON, which panda
+    # blocks. Spoof that button while it is on and openpilot wants the wheel. MADS enabled (not latActive) is the
+    # intent signal on purpose: it survives the relay watchdog's fault, which is exactly when we need to press. The
+    # HDA-road gate window is excluded because there we deliberately hand the stock system the wheel.
+    self.stock_lfa_button = False
+    if self.CP_SP.flags & HyundaiFlagsSP.CANFD_ADRV_LATERAL_TAKEOVER:
+      self.stock_lfa_button = self.stock_lfa.update(CS.stock_lfa_icon != 0,
+                                                    CC_SP.mads.enabled and not CS.hda_road_active)
 
     # accel + longitudinal
     accel = float(np.clip(actuators.accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
@@ -307,7 +321,8 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
     can_sends.extend(hyundaicanfd.create_steering_messages(self.packer, self.CP, self.CAN, CC.enabled, apply_steer_req, apply_torque, self.apply_angle_last
                                                            , self.lkas_icon,
                                                            hide_lfa_status=bool(self.CP_SP.flags & HyundaiFlagsSP.CANFD_HDA_EXP_LFA_STATUS),
-                                                           lfa_off_when_inactive=bool(self.CP_SP.flags & HyundaiFlagsSP.CANFD_ADRV_LATERAL_TAKEOVER)))
+                                                           lfa_off_when_inactive=bool(self.CP_SP.flags & HyundaiFlagsSP.CANFD_ADRV_LATERAL_TAKEOVER),
+                                                           lfa_button=self.stock_lfa_button))
 
     # prevent LFA from activating on LKA steering cars by sending "no lane lines detected" to ADAS ECU
     if self.frame % 5 == 0 and lka_steering:
@@ -341,7 +356,11 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
             # LX3: the SCC_CONTROL cancel frame is not in this configuration's panda TX list (it was blocked on every
             # cancel), and the car has no cancel button code: the cruise button (0x08) turns ACC main off while
             # engaged. Send it after the usual delay so a brake cancel that is already in progress never triggers it.
-            if self.cancel_counter > CANCEL_BUTTON_DELAY_FRAMES:
+            # Never while the ADRV relay watchdog is faulted: that fault means the stock system holds the steering,
+            # and turning ACC off does not give it back. On route 69fb86b6677ce882/0000005e--ef39be0c84 this fired
+            # twice (1025.9 s and 1164.6 s) and switched the driver's own ACC off 0.2 s after they pressed cruise,
+            # while the stock lane centering kept steering regardless.
+            if self.cancel_counter > CANCEL_BUTTON_DELAY_FRAMES and not CS.adrv_relay_watchdog.fault:
               for i in range(1, 7):
                 can_sends.append(hyundaicanfd.create_wheel_buttons_alt(self.packer, self.CAN, int(CS.buttons_counter) + 2 * i, Buttons.CANCEL))
               self.last_button_frame = self.frame

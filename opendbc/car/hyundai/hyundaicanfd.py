@@ -37,7 +37,7 @@ class CanBus(CanBusBase):
 
 
 def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque, apply_angle, lkas_icon, hide_lfa_status=False,
-                             lfa_off_when_inactive=False):
+                             lfa_off_when_inactive=False, lfa_button=False):
   values = {
     "LKA_OptUsmSta": 2,
     "LKA_SysIndReq": 2 if enabled else 1,
@@ -76,6 +76,14 @@ def create_steering_messages(packer, CP, CAN, enabled, lat_active, apply_torque,
       # 228.94 to 232.57 s while the driver had LFA on). With 1 left in place after a handoff the ADRV kept its own LFA
       # steering the car through an ACC cancel until shutdown (route /00000050, 282.4-317 s).
       values["LKA_SysIndReq"] = 0
+
+    if lfa_button:
+      # 2026 Palisade LX3: spoof the camera's LFA button pulse, the only input that switches the car's own lane
+      # centering off. The camera pulses this bit for 2-4 frames after a press on WHEEL_BUTTONS_ALT and the ADRV
+      # toggles LFA_ICON ~0.16 s later; panda blocks the camera's copy of this message, so without this the button is
+      # dead and the ADRV's own lane centering stays on for the rest of the drive once HDA has armed it (route
+      # 69fb86b6677ce882/0000005e--ef39be0c84). See sunnypilot/car/hyundai/stock_lfa.py for the pulse state machine.
+      values["LFA_BUTTON"] = 1
 
   ret = []
   if CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG:

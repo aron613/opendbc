@@ -29,6 +29,11 @@ class CarStateExt:
     self.adrv_relay_watchdog = AdrvRelayWatchdog()
     self.mdps_aci_fault_frames = 0
 
+    # read by the CarController: LFA_ICON is the car's own lane centering state (0 = off) and hda_road_active is the
+    # window where we deliberately hand it the wheel
+    self.stock_lfa_icon = 0
+    self.hda_road_active = False
+
   def update_speed_limit(self, cp, cp_cam) -> float:
     speed_limit = 0
 
@@ -108,6 +113,8 @@ class CarStateExt:
       hda_suppressed = bool(self.CP_SP.flags & HyundaiFlagsSP.CANFD_HDA_EXP_LFA_STATUS)
       hda_road = ret.cruiseState.enabled and cp.vl["LFAHDA_CLUSTER"]["HDA_ICON"] == 1
       ret_sp.hdaRoadActive = hda_road
+      self.hda_road_active = hda_road
+      self.stock_lfa_icon = int(cp.vl["LFAHDA_CLUSTER"]["LFA_ICON"])
       ret_sp.stockLateralActive = ret.cruiseState.enabled and not hda_suppressed and not hda_road
 
       # 2. Relay watchdog: LFA_ALT (0xCB) on E-CAN is what the MDPS steers to. Normally it is a byte-faithful relay of

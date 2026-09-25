@@ -27,12 +27,16 @@ See the LICENSE.md file in the root directory for more details.
 #   ANGLE_TOL  2.0 deg plus 0.03 s of the model's own rate (one to three frames of relay latency)
 #   PERSIST    30 frames (0.3 s at 100 Hz): the substitution lasted 20+ s
 #   HOLD       500 frames (5 s): once tripped, lateral is dropped, which makes the relay agree again immediately; the
-#              hold stops the fault from clearing and re-arming every 0.3 s
+#              hold stops the fault from clearing and re-arming every 0.3 s. The hold only runs down once the relay is
+#              genuinely idle (see IDLE_GAIN_TOL): on route 69fb86b6677ce882/0000005e--ef39be0c84 the ADRV held 0xCB
+#              active with its own 0.4-0.6 gain for minutes after our lateral dropped, and a plain 5 s release re-armed
+#              openpilot into a fight it cannot win 12 times, each time with a full-screen takeover alert.
 GAIN_TOL = 0.10
 ANGLE_TOL_DEG = 2.0
 ANGLE_RATE_TOL_S = 0.03
 RELAY_ANGLE_MAX = 176.7
 RELAY_SLEW_DEG_S = 250.0
+IDLE_GAIN_TOL = 0.05  # 0xCB rests at gain 0.0 when the ADRV is not steering; well below the 0.2 smallest seen in use
 PRESSED_GRACE_FRAMES = 50
 PERSIST_FRAMES = 30
 HOLD_FRAMES = 500
@@ -46,6 +50,7 @@ class AdrvRelayWatchdog:
     self.grace_frames = 0
     self.model_angle = 0.0
     self.mismatch = False
+    self.relay_idle = True
 
   @property
   def fault(self) -> bool:
@@ -79,10 +84,15 @@ class AdrvRelayWatchdog:
     else:
       self.mismatch = False
 
+    # the relay has let go when it is inactive, or active but carrying no torque-reduction gain of its own
+    self.relay_idle = (not relay_active) or (relay_gain <= IDLE_GAIN_TOL)
+
     self.mismatch_frames = self.mismatch_frames + 1 if self.mismatch else 0
     if self.mismatch_frames >= PERSIST_FRAMES:
       self.hold_frames = HOLD_FRAMES
-    elif self.hold_frames > 0:
+    elif self.hold_frames > 0 and self.relay_idle:
+      # only let the fault clear once whoever took the relay has released it, so lateral re-arms into an idle relay
+      # instead of into the stock system's own request
       self.hold_frames -= 1
 
     return self.fault

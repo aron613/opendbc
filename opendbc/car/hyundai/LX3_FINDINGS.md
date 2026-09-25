@@ -434,3 +434,60 @@ lateral is *active* too, with the HDA-road gate disabled for that test, to see w
 when it believes LFA is switched off. Unknown risks: the ADRV may drop the 0xCB relay when LFA reads off, in which case
 the MDPS stops steering and the watchdog trips immediately; parked test first.
 
+## The stuck stock lane centering, and the fix (`0000005e--ef39be0c84`, 2026-09-24)
+
+Long drive on the build above (HDA-road gate + `LKA_SysIndReq` 0 while inactive). The gate worked on all seven HDA
+windows, but after the first one the car's own lane centering stayed on for the remaining twelve minutes and nothing the
+driver pressed switched it off. 29 segments, 1724 s.
+
+**What happened.** openpilot steered through stock cruise for 175 s with `LFA_ICON` = 0 (the car's own lane centering
+off). At 977.5 s ACC re-engaged at 42 mph, `HDA_ICON` lit 0.11 s later, the gate yielded in the same 10 ms frame, and the
+ADRV ramped its own 0xCB gain from 0.056 to 0.60 over two seconds and took the wheel. At 977.63 s `LFA_ICON` went 0 to 2:
+**the ADRV switched the car's own lane centering on as part of arming HDA, and it never went off again** (45 transitions
+after that, all between 1, 2 and 3; 533 s of it in the active state 2). From then on every openpilot re-arm met a relay
+that was carrying the ADRV's own request, tripped the watchdog in 0.3 s, held for 5 s, released, and tripped again:
+twelve trips, 61 s in fault, eleven full-screen takeover alerts. Twice (1025.9 s and 1164.6 s) openpilot's own 0x08
+cancel turned the driver's ACC off 0.2 s after they pressed cruise. After the last ACC-off at 1556.5 s the ADRV kept
+steering alone for 157 s until the car was parked, with openpilot off and transmitting nothing.
+
+**Mechanism.** The LFA on/off state is owned by the ADRV and the only input that toggles it is
+`LKAS_ALT.LFA_BUTTON` (0x110 bit 56) coming from the camera. Route `00000008--c7bfd877d8` proves the chain, because the
+panda was still in elm327 there and the camera's 0x110 reached the ADRV: press on 0x10B, camera pulses LFA_BUTTON for
+2-4 frames, `LFA_ICON` toggles ~0.16 s later, four presses four toggles. With openpilot driving, panda statically blocks
+the camera's 0x110 (it is in the TX list with `check_relay`), and our own 0x110 always sent LFA_BUTTON = 0, so the LFA
+button could not turn the car's lane centering on *or* off. That is also why it sat at 0 for the first sixteen minutes.
+Nothing else we send is implicated: in the stuck window our 0x110 was identical to the camera's LFA-off baseline in
+every status field (RcgSta 0, SysIndReq 0, ANGLE_ACTIVE 1, gain 0, all warnings 0), while the ADRV published its own
+RcgSta 3 to the cluster. Our `LKA_SysIndReq` 0 change did take effect and is not read by the ADRV once it has taken
+lateral.
+
+**Fix (three parts, LX3-gated, no toggle).**
+
+1. `sunnypilot/car/hyundai/stock_lfa.py`: pulse `LKAS_ALT.LFA_BUTTON` for three frames (30 ms, inside the camera's 2-4
+   frame shape) whenever `LFA_ICON` is non-zero and openpilot wants the wheel, then wait 0.5 s (3x the ADRV's response
+   time) and look again, up to three attempts before backing off for good. The intent signal is MADS enabled, not
+   `latActive`, because it has to survive the relay fault; that is exactly when the press is needed. The HDA-road gate
+   window is excluded on purpose: there the stock system is deliberately the one steering, and switching it off would
+   leave nobody steering at speed.
+2. `adrv_relay.py`: the 5 s hold now only runs down once the relay is idle (inactive, or active with gain at or below
+   `IDLE_GAIN_TOL` = 0.05). Consequence, intended: if the ADRV never lets go, lateral stays out for the rest of the
+   drive rather than re-arming into a fight it cannot win.
+3. `carcontroller.py`: the 0x08 cancel is not sent while the relay watchdog fault is up. Canceling ACC does not return
+   lateral, and it was taking the driver's own cruise away.
+
+**Caveats.**
+
+- **HDA armed while the car's lane centering was still off** (`LFA_ICON` 0 at 977.48 s, `HDA_ICON` 1 at 977.59 s, then
+  `LFA_ICON` 2 at 977.63 s). So this fix gives the wheel back after a handoff; it does not by itself stop HDA from
+  arming. Whether pulsing LFA off *during* an active HDA window also drops HDA is untested and cannot happen with the
+  gate exclusion above; it needs a deliberate test before anyone relies on it.
+- **The cancel change leaves stock ACC engaged** while the stock system steers. That is the honest state of the car: the
+  driver's own cruise button still turns it off, and openpilot no longer fights them for it.
+- The pulse is a spoofed button press on a message we already transmit, so no panda change was needed. It only toggles
+  a driver-facing lane-centering feature.
+
+**How to check it on a log.** Our 0x110 byte 7 bit 0 should pulse for three frames, `LFA_ICON` in 0x1E0 should go to 0
+within ~0.2 s, 0xCB should drop to `ADAS_ActvACILvl2Sta` 1 with gain 0, and `steerFaultTemporary` should clear 5 s after
+that with no second trip. If `LFA_ICON` stays non-zero after three pulses, the ADRV is not accepting the bit and the
+next lever is the lane data in the 0x362 spoof.
+
