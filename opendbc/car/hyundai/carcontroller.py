@@ -20,6 +20,7 @@ from opendbc.sunnypilot.car.hyundai.stock_lfa import StockLfaDisabler
 from opendbc.sunnypilot.car.hyundai.values import HyundaiFlagsSP
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
+ButtonType = structs.CarState.ButtonEvent.Type
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 
 # EPS faults if you apply torque while the steering angle is above 90 degrees for more than 1 second
@@ -206,12 +207,15 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
     # 2026 Palisade LX3: the car's own lane centering switches itself on when the ADRV arms HDA and then stays on for
     # the rest of the drive, because the only input that toggles it is the camera's LKAS_ALT.LFA_BUTTON, which panda
     # blocks. Spoof that button while it is on and openpilot wants the wheel. MADS enabled (not latActive) is the
-    # intent signal on purpose: it survives the relay watchdog's fault, which is exactly when we need to press. The
-    # HDA-road gate window is excluded because there we deliberately hand the stock system the wheel.
+    # intent signal on purpose: it survives the relay watchdog's fault, which is exactly when we need to press. Inside
+    # an HDA-road window we only press if the driver asked with the LFA button. See stock_lfa.py.
     self.stock_lfa_button = False
     if self.CP_SP.flags & HyundaiFlagsSP.CANFD_ADRV_LATERAL_TAKEOVER:
-      self.stock_lfa_button = self.stock_lfa.update(CS.stock_lfa_icon != 0,
-                                                    CC_SP.mads.enabled and not CS.hda_road_active)
+      lfa_pressed = any(be.type == ButtonType.lkas and be.pressed for be in CS.out.buttonEvents)
+      self.stock_lfa_button = self.stock_lfa.update(CS.stock_lfa_icon, CS.stock_hda_window, CC_SP.mads.enabled, lfa_pressed)
+      CS.stock_lfa_take_back = self.stock_lfa.take_back
+      CS.stock_lfa_requested = self.stock_lfa.requested
+      CS.stock_lfa_failed = self.stock_lfa.failed
 
     # accel + longitudinal
     accel = float(np.clip(actuators.accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))

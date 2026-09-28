@@ -26,6 +26,11 @@ See the LICENSE.md file in the root directory for more details.
 #   GAIN_TOL   0.10   > 7x the relay's worst-case step (0.014), < half of the smallest substitution gap seen (0.2)
 #   ANGLE_TOL  2.0 deg plus 0.03 s of the model's own rate (one to three frames of relay latency)
 #   PERSIST    30 frames (0.3 s at 100 Hz): the substitution lasted 20+ s
+#   GAIN_ONLY_PERSIST 90 frames (0.9 s) when only the gain disagrees and the angle is still tracking. That is what a
+#              clean handback looks like: on route 69fb86b6677ce882/0000007a--e0bfdd25dc, after the stock system was
+#              switched off, its gain decayed from 0.34 to 0 while ours ramped up from 0 at +0.004/frame, and the two
+#              crossed over 26 frames - four frames short of tripping. Real substitutions run for tens of seconds, so
+#              they still trip, 0.6 s later than before. An angle divergence keeps the 30 frame threshold.
 #   HOLD       500 frames (5 s): once tripped, lateral is dropped, which makes the relay agree again immediately; the
 #              hold stops the fault from clearing and re-arming every 0.3 s. The hold only runs down once the relay is
 #              genuinely idle (see IDLE_GAIN_TOL): on route 69fb86b6677ce882/0000005e--ef39be0c84 the ADRV held 0xCB
@@ -39,6 +44,7 @@ RELAY_SLEW_DEG_S = 250.0
 IDLE_GAIN_TOL = 0.05  # 0xCB rests at gain 0.0 when the ADRV is not steering; well below the 0.2 smallest seen in use
 PRESSED_GRACE_FRAMES = 50
 PERSIST_FRAMES = 30
+GAIN_ONLY_PERSIST_FRAMES = 90
 HOLD_FRAMES = 500
 DT = 0.01
 
@@ -50,6 +56,7 @@ class AdrvRelayWatchdog:
     self.grace_frames = 0
     self.model_angle = 0.0
     self.mismatch = False
+    self.gain_only_frames = 0
     self.relay_idle = True
 
   @property
@@ -81,14 +88,20 @@ class AdrvRelayWatchdog:
       gain_mismatch = abs(cmd_gain - relay_gain) > GAIN_TOL
       angle_mismatch = abs(self.model_angle - relay_angle) > ANGLE_TOL_DEG + ANGLE_RATE_TOL_S * model_rate
       self.mismatch = (not relay_active) or gain_mismatch or angle_mismatch
+      gain_only = self.mismatch and relay_active and gain_mismatch and not angle_mismatch
     else:
       self.mismatch = False
+      gain_only = False
 
     # the relay has let go when it is inactive, or active but carrying no torque-reduction gain of its own
     self.relay_idle = (not relay_active) or (relay_gain <= IDLE_GAIN_TOL)
 
     self.mismatch_frames = self.mismatch_frames + 1 if self.mismatch else 0
-    if self.mismatch_frames >= PERSIST_FRAMES:
+    self.gain_only_frames = self.gain_only_frames + 1 if gain_only else 0
+    # only the longer threshold if every frame of this run has been gain-only; one frame of angle divergence puts the
+    # whole run back on PERSIST_FRAMES
+    persist = GAIN_ONLY_PERSIST_FRAMES if self.gain_only_frames == self.mismatch_frames else PERSIST_FRAMES
+    if self.mismatch_frames >= persist:
       self.hold_frames = HOLD_FRAMES
     elif self.hold_frames > 0 and self.relay_idle:
       # only let the fault clear once whoever took the relay has released it, so lateral re-arms into an idle relay

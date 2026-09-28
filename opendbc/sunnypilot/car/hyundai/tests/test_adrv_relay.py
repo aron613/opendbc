@@ -1,7 +1,8 @@
 import unittest
 
-from opendbc.sunnypilot.car.hyundai.adrv_relay import (AdrvRelayWatchdog, PERSIST_FRAMES, HOLD_FRAMES, PRESSED_GRACE_FRAMES,
-                                                       RELAY_ANGLE_MAX, RELAY_SLEW_DEG_S, DT)
+from opendbc.sunnypilot.car.hyundai.adrv_relay import (AdrvRelayWatchdog, PERSIST_FRAMES, GAIN_ONLY_PERSIST_FRAMES,
+                                                       HOLD_FRAMES, PRESSED_GRACE_FRAMES, RELAY_ANGLE_MAX,
+                                                       RELAY_SLEW_DEG_S, DT)
 
 
 class FakeRelay:
@@ -44,10 +45,39 @@ class TestAdrvRelayWatchdog(unittest.TestCase):
     self.assertFalse(self._run(wd, PERSIST_FRAMES - 1, (8.6, 0.28), (1.4, 0.01)))
     self.assertTrue(self._run(wd, 1, (8.6, 0.28), (1.4, 0.01)))
 
-  def test_gain_only_divergence_faults(self):
+  def test_gain_only_divergence_faults_on_the_longer_persistence(self):
+    # the angle is still tracking, so this is held to GAIN_ONLY_PERSIST_FRAMES: a clean handback looks like this for a
+    # quarter of a second, a real substitution for tens of seconds
     wd = AdrvRelayWatchdog()
     self._settle(wd, 3.0)
-    self.assertTrue(self._run(wd, PERSIST_FRAMES, (3.0, 0.85), (3.0, 0.30)))
+    self.assertFalse(self._run(wd, GAIN_ONLY_PERSIST_FRAMES - 1, (3.0, 0.85), (3.0, 0.30)))
+    self.assertTrue(self._run(wd, 1, (3.0, 0.85), (3.0, 0.30)))
+
+  def test_clean_handback_gain_crossover_does_not_fault(self):
+    # route 69fb86b6677ce882/0000007a--e0bfdd25dc, 55.42-56.0 s: after the stock system was switched off its gain
+    # decayed from 0.336 to 0 while ours ramped up from 0 at +0.004/frame, with the angle tracking throughout. That ran
+    # for 26 frames against the old single 30 frame threshold.
+    wd = AdrvRelayWatchdog()
+    self._run(wd, 20, (-1.9, 0.0), (-1.7, 0.336), cmd_active=False)
+    fault = False
+    cmd_gain, relay_gain = 0.0, 0.336
+    for _ in range(60):
+      cmd_gain = min(cmd_gain + 0.004, 0.85)
+      relay_gain = max(relay_gain - 0.006, 0.0)
+      fault = wd.update(-1.9, cmd_gain, True, -1.7, relay_gain, True) or fault
+    self.assertFalse(fault)
+
+  def test_angle_divergence_keeps_the_short_persistence(self):
+    wd = AdrvRelayWatchdog()
+    self._settle(wd, 10.0)
+    self.assertTrue(self._run(wd, PERSIST_FRAMES, (10.0, 0.85), (5.0, 0.30)))
+
+  def test_one_frame_of_angle_divergence_drops_the_longer_persistence(self):
+    wd = AdrvRelayWatchdog()
+    self._settle(wd, 3.0)
+    self._run(wd, 5, (3.0, 0.85), (3.0, 0.30))          # gain-only so far
+    self._run(wd, 1, (3.0, 0.85), (30.0, 0.30))         # the angle diverges once
+    self.assertTrue(self._run(wd, PERSIST_FRAMES - 6, (3.0, 0.85), (3.0, 0.30)))
 
   def test_angle_only_divergence_faults(self):
     wd = AdrvRelayWatchdog()

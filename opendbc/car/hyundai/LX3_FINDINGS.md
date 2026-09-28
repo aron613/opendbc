@@ -491,3 +491,51 @@ within ~0.2 s, 0xCB should drop to `ADAS_ActvACILvl2Sta` 1 with gain 0, and `ste
 that with no second trip. If `LFA_ICON` stays non-zero after three pulses, the ADRV is not accepting the bit and the
 next lever is the lane data in the 0x362 spoof.
 
+## The LFA-off spoof verified, and the driver take-back (`0000007a--e0bfdd25dc`, 2026-09-26)
+
+First drive with the spoof (commit 9acf3d481a). Segments 0-2 of 5 uploaded, covering everything below.
+
+**The spoof works, and this is the first proof the ADRV accepts that bit from us.** Two HDA windows, both gated
+cleanly. After the driver's brake cancel at 55.39 s: our first LFA_BUTTON pulse went out at 55.398 s, `LFA_ICON` moved
+2 -> 3 exactly 0.16 s later (the same latency the camera gets), the icon reached 0 at 56.88 s, and openpilot had the
+wheel with the relay tracking us to 0.10 deg mean / 0.60 deg worst and 0.001 mean gain error over the next 37 s. Zero
+watchdog trips, zero takeover alerts, zero 0x10B cancels in the whole drive. Compare route `0000005e`, where the same
+situation produced twelve trips, eleven full-screen alerts and a green wheel that survived to ignition-off. A second
+pulse at 174.537 s was cut to a single frame when MADS dropped mid-pulse, and the ADRV honored even that.
+
+**Two things the drive exposed, both now fixed:**
+
+- The ADRV takes about a second to leave the active state and shows `LFA_ICON` = 3 while it does. The old 0.5 s
+  re-check fired into that transition, so of the four pulses in that episode two were wasted and one toggled the
+  feature back on (icon 0 at 56.57 s, back to 1 at 56.67 s, off again at 56.88 s). `RECHECK_FRAMES` is now 150 (1.5 s)
+  and state 3 holds the state machine instead of triggering another pulse. One pulse should now do the job.
+- The handback itself nearly tripped the watchdog. With the stock system switched off, its gain decayed 0.336 -> 0
+  while ours ramped up from 0 at +0.004/frame, and the gain-only mismatch ran for 26 frames against the 30 frame
+  threshold, a 40 ms margin. Gain-only mismatches with the angle still tracking now need
+  `GAIN_ONLY_PERSIST_FRAMES` = 90 (0.9 s); a single frame of angle divergence puts the run back on 30. Real
+  substitutions run for tens of seconds, so they still trip, 0.6 s later than before.
+
+**Why the driver's own LFA press did nothing, and the take-back.** Six presses during the second HDA window
+(157.1 to 172.5 s) changed nothing: the camera echoed each one with a four-frame LFA_BUTTON pulse ~0.2 s later, panda
+blocked that message as it always has, our own 0x110 did not pulse because the HDA-gate exclusion suppressed it, and
+`LFA_ICON` stayed at 2. So the press failed because of our own exclusion, not the block and not the ADRV ignoring it.
+A driver LFA press inside an HDA window is now a request for the wheel back: it arms the same pulse sequence
+(`driver_request` in `stock_lfa.py`), shows "Requesting stock LFA off / Taking back steering", and falls back to
+"Stock lane centering will not switch off / Cancel cruise to resume steering" if three attempts do not clear the icon.
+MADS still does not toggle on that press. Once the stock system lets go, `take_back` drops the HDA-road gate even
+though `HDA_ICON` is still lit, otherwise nobody would be steering; the latch clears when the HDA window ends. We still
+never press on our own inside an HDA window.
+
+**Open question and the branch.** Whether the ADRV honors the bit *during* an HDA window is untested: both pulses it
+honored on `0000007a` landed within 0.08 s of `HDA_ICON` going dark, so the window was already ending. The take-back is
+the experiment.
+
+- If it honors it, the driver has a real "take the wheel back" button on an HDA road, and the follow-up question is
+  whether `HDA_ICON` also goes dark (the ADRV giving up the road) or stays lit with its lateral off. If the icon stays
+  lit, watch for it re-arming its lane centering, which would show up as `LFA_ICON` returning to 2 and a fresh set of
+  pulses.
+- If it does not, the sanctioned channel only works at the edges of HDA windows, the alert will say so, and the next
+  levers are the lane data in the 0x362 spoof (only byte 7 is zeroed today, the geometry the ADRV steers from is still
+  passed through) and Experiment D (`LKA_SysIndReq` 0 while openpilot lateral is active), neither of which has been
+  tried.
+
