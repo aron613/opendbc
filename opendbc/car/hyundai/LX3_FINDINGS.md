@@ -588,11 +588,21 @@ take-back: 3-frame pulse, 1.5 s re-check, three attempts, then it backs off. Ale
 Taking back steering" while it works, "Stock HDA active / Cancel cruise to override" if it runs out of attempts. The
 driver take-back works whether this is on or off. Expect the 0.3-1.3 s nudge above at every HDA arm.
 
-**Feature: separate engage** (`HyundaiLx3SeparateEngage`, "LX3 Separate cruise / lateral engage", default off). The LFA
-button engages MADS lateral only and never turns cruise on; the cruise-main button turns cruise on only, never engages
-MADS, and turning it off no longer switches MADS off. This removes the coupling that caused the churn on route
-`0000005e`, where every cruise-main press toggled MADS with it and the driver had to re-arm after each one. The LFA
-button already worked with cruise main off on every Hyundai CAN-FD car (`allow_always`).
+**Feature: separate engage** (`HyundaiLx3SeparateEngage`, "LX3 Separate cruise / lateral engage", default off).
+"Cruise engages both; LFA engages lateral only":
+
+| action | cruise | openpilot lateral |
+|---|---|---|
+| LFA button, lateral off | untouched | on |
+| LFA button, lateral on | untouched | off |
+| cruise-main on | on | on |
+| cruise-main off | off | stays on |
+
+So each button switches off only what it switched on, and lateral outlives a cruise cancel. This removes the coupling
+that caused the churn on route `0000005e`, where every cruise-main press toggled MADS with it and the driver had to
+re-arm after each one; there the stock-cruise handoff was not yet clean, and now it is. The option takes precedence over
+the general `MadsMainCruiseAllowed` setting for the engage half, so its description holds whatever that is set to. The
+LFA button already worked with cruise main off on every Hyundai CAN-FD car (`allow_always`).
 
 **The three hard rules in `stock_lfa.py`**, all from the logs:
 
