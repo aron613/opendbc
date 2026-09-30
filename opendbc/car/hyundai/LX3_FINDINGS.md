@@ -539,3 +539,68 @@ the experiment.
   passed through) and Experiment D (`LKA_SysIndReq` 0 while openpilot lateral is active), neither of which has been
   tried.
 
+## The take-back verified, and the two options built on it (`00000087--9ebcb9bbdd`, 2026-09-29)
+
+105 minute drive on the take-back build (commit ea3e952b53). Only segment 0's rlog had uploaded, so the route numbers
+below come from qlogs: openpilot's own state at 10 Hz, no CAN. The CAN-level timings come from the fully uploaded
+routes `0000007a`, `0000005e`, `00000018` and the parked passthrough route `00000008--c7bfd877d8`.
+
+**The driver take-back works, four times out of four.** Six HDA windows, four ended with a driver LFA press and two
+with cruise going off. Every press raised "Requesting stock LFA off"; the fallback alert never appeared, so the first
+attempt cleared it each time.
+
+| HDA armed | request | stock system released | openpilot steering | press to control |
+|---|---|---|---|---|
+| 823.03 | 827.79 | 828.00 | 828.01 | 0.22 s |
+| 1064.93 | 1068.47 (button seen) | 1068.67 | 1068.66 | 0.19 s |
+| 2457.37 | 2459.71 | 2459.82 | 2459.84 | 0.13 s |
+| 2521.35 | 2522.47 | 2522.67 | 2522.69 | 0.22 s |
+
+No watchdog trip followed any of them. The only full-screen takeover alert in the whole drive came after a cruise-off
+handback where no button was pressed, and even that recovered once without a re-arm loop, so the hold latch works. Three
+of the four take-backs left stock cruise engaged; after the first, openpilot steered for 163 s, the first 130 of them
+with stock cruise still doing the pedals. The yield gate released 0.13-0.16 s after each request, which matches the
+ADRV's acknowledge latency rather than the ~1.2 s it needs to switch its lane centering off from the actively-steering
+state, so the likely mechanism is the ADRV dropping the whole HDA state on the press. The rlogs will settle that.
+
+**The HDA-arm floor: 0.3 to 1.3 s.** From the three clean fresh armings, with the HDA icon lighting as zero:
+
+| | 6 mph | 14 mph | 42 mph |
+|---|---|---|---|
+| car's lane centering switches on | 0.042 s | 0.052 s | 0.042 s |
+| ADRV 0xCB gain > 0.05 | 0.25 s | 0.07 s | 0.02 s |
+| > 0.10 | 0.42 s | 0.18 s | 0.11 s |
+| > 0.20 | 0.60 s | 0.48 s | 0.29 s |
+| > 0.40 | none in 3 s | 2.13 s | 0.82 s |
+
+Shortest press-to-icon latency anywhere is 0.152 s (parked passthrough); our own pulses got 0.181 and 0.185 s. Off from
+standby takes 0.17 s, off from actively steering takes ~1.18 s through the transition state. So the earliest an
+automatic pulse can land is ~0.11 s after the icon (0.05 for the car to switch its lane centering on, 0.06 to confirm
+the icon over two 20 Hz messages), acknowledged at ~0.29 s, by which time the car's gain is 0.05-0.20. If the press
+collapses the HDA state the floor is about 0.3 s; if it goes the slow route it is about 1.3 s with the gain peaking
+0.3-0.45. It cannot be zero, and it is not the 1-2 s a full handoff takes. One more piece of evidence that the press is
+what makes the ADRV let go: with a pulse its gain reached zero 0.59 s and 0.89 s after a cancel, against 1.60 s in the
+best case and never in three others without one.
+
+**Feature: auto-suppress HDA** (`HyundaiLx3AutoSuppressHda`, "LX3 Auto-suppress HDA", default off). Pulses the car's
+lane centering off as soon as the ADAS ECU arms HDA, using the same state machine, latch and caps as the driver
+take-back: 3-frame pulse, 1.5 s re-check, three attempts, then it backs off. Alerts: "Suppressing stock lane centering /
+Taking back steering" while it works, "Stock HDA active / Cancel cruise to override" if it runs out of attempts. The
+driver take-back works whether this is on or off. Expect the 0.3-1.3 s nudge above at every HDA arm.
+
+**Feature: separate engage** (`HyundaiLx3SeparateEngage`, "LX3 Separate cruise / lateral engage", default off). The LFA
+button engages MADS lateral only and never turns cruise on; the cruise-main button turns cruise on only, never engages
+MADS, and turning it off no longer switches MADS off. This removes the coupling that caused the churn on route
+`0000005e`, where every cruise-main press toggled MADS with it and the driver had to re-arm after each one. The LFA
+button already worked with cruise main off on every Hyundai CAN-FD car (`allow_always`).
+
+**The three hard rules in `stock_lfa.py`**, all from the logs:
+
+1. Never pulse while `LFA_ICON` reads off, and confirm it over two 20 Hz messages first. The button is a toggle, so a
+   pulse there switches the car's lane centering **on**.
+2. Never pulse on our own inside an HDA window unless auto-suppress is on. There we have deliberately handed the stock
+   system the wheel, and switching it off would leave nobody steering. A driver press is the exception, since they are
+   asking for the wheel back.
+3. Wait out `LFA_ICON` = 3. The ADRV sits there for about a second on its way out and a pulse only toggles it back on
+   (route `0000007a`: of four pulses, two wasted and one re-armed the feature).
+

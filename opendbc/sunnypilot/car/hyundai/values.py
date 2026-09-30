@@ -85,3 +85,6 @@ class HyundaiFlagsSP(IntFlag):
   # LKAS_ALT while active, which keeps the ADRV relaying our command while stock ACC is engaged (verified on routes
   # 00000035 and 00000037). Bypasses the stock-cruise lateral gate; the ADRV relay watchdog stays armed.
   CANFD_HDA_EXP_LFA_STATUS = 2 ** 12
+  # 2026 Palisade LX3, opt-in: pulse the car's own lane centering off as soon as the ADAS ECU arms HDA on a road,
+  # instead of only when the driver asks with the LFA button. The car still nudges the wheel for 0.3-1.3 s first.
+  CANFD_AUTO_SUPPRESS_HDA = 2 ** 13

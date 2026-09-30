@@ -33,11 +33,13 @@ class CarStateExt:
     # raw "ADAS ECU shows HDA on this road with ACC engaged" window
     self.stock_lfa_icon = 0
     self.stock_hda_window = False
-    # written by the CarController from StockLfaDisabler: the driver asked for the wheel back and got it, a request is
-    # in flight, and a request that ran out of attempts
+    # written by the CarController from StockLfaDisabler: the request worked and the gate can release, plus the four
+    # UI states (a driver take-back or an auto-suppress request, each either in flight or out of attempts)
     self.stock_lfa_take_back = False
     self.stock_lfa_requested = False
     self.stock_lfa_failed = False
+    self.stock_lfa_auto_requested = False
+    self.stock_lfa_auto_failed = False
 
   def update_speed_limit(self, cp, cp_cam) -> float:
     speed_limit = 0
@@ -126,6 +128,8 @@ class CarStateExt:
       ret_sp.hdaRoadActive = hda_road
       ret_sp.stockLfaOffRequested = self.stock_lfa_requested
       ret_sp.stockLfaOffFailed = self.stock_lfa_failed
+      ret_sp.stockLfaAutoSuppressing = self.stock_lfa_auto_requested
+      ret_sp.stockLfaAutoSuppressFailed = self.stock_lfa_auto_failed
       ret_sp.stockLateralActive = ret.cruiseState.enabled and not hda_suppressed and not hda_road
 
       # 2. Relay watchdog: LFA_ALT (0xCB) on E-CAN is what the MDPS steers to. Normally it is a byte-faithful relay of

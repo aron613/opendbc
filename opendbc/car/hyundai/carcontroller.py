@@ -208,14 +208,21 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
     # the rest of the drive, because the only input that toggles it is the camera's LKAS_ALT.LFA_BUTTON, which panda
     # blocks. Spoof that button while it is on and openpilot wants the wheel. MADS enabled (not latActive) is the
     # intent signal on purpose: it survives the relay watchdog's fault, which is exactly when we need to press. Inside
-    # an HDA-road window we only press if the driver asked with the LFA button. See stock_lfa.py.
+    # an HDA-road window we only press if the driver asked with the LFA button, or if auto-suppress is on. See
+    # stock_lfa.py for the three rules and the evidence.
     self.stock_lfa_button = False
     if self.CP_SP.flags & HyundaiFlagsSP.CANFD_ADRV_LATERAL_TAKEOVER:
       lfa_pressed = any(be.type == ButtonType.lkas and be.pressed for be in CS.out.buttonEvents)
-      self.stock_lfa_button = self.stock_lfa.update(CS.stock_lfa_icon, CS.stock_hda_window, CC_SP.mads.enabled, lfa_pressed)
+      auto_suppress = bool(self.CP_SP.flags & HyundaiFlagsSP.CANFD_AUTO_SUPPRESS_HDA)
+      self.stock_lfa_button = self.stock_lfa.update(CS.stock_lfa_icon, CS.stock_hda_window, CC_SP.mads.enabled,
+                                                   lfa_pressed, auto_suppress)
+      driver = self.stock_lfa.driver_request
       CS.stock_lfa_take_back = self.stock_lfa.take_back
-      CS.stock_lfa_requested = self.stock_lfa.requested
-      CS.stock_lfa_failed = self.stock_lfa.failed
+      # a driver take-back and an auto-suppress request get different alerts; the driver's own press wins
+      CS.stock_lfa_requested = self.stock_lfa.requested and driver
+      CS.stock_lfa_failed = self.stock_lfa.failed and driver
+      CS.stock_lfa_auto_requested = self.stock_lfa.requested and not driver
+      CS.stock_lfa_auto_failed = self.stock_lfa.failed and self.stock_lfa.auto_request and not driver
 
     # accel + longitudinal
     accel = float(np.clip(actuators.accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))

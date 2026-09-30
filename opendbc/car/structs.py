@@ -171,3 +171,5 @@ class CarStateSP:
   hdaRoadActive: bool = auto_field()  # the ADAS ECU reports HDA available on this road while ACC is engaged; lateral yields before it takes over
   stockLfaOffRequested: bool = auto_field()  # asking the ADAS ECU to switch its own lane centering off, at the driver's request
   stockLfaOffFailed: bool = auto_field()  # it did not switch off after the last attempt
+  stockLfaAutoSuppressing: bool = auto_field()  # auto-suppress is switching the car's own lane centering off at HDA arm
+  stockLfaAutoSuppressFailed: bool = auto_field()  # auto-suppress ran out of attempts; stock HDA keeps the steering
