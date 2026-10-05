@@ -2,7 +2,7 @@ import unittest
 
 from opendbc.car import structs
 from opendbc.sunnypilot.car.hyundai.stock_lfa import (StockLfaDisabler, PULSE_FRAMES, RECHECK_FRAMES, MAX_ATTEMPTS,
-                                                      ICON_CONFIRM_FRAMES, LFA_ICON_TRANSITION)
+                                                      ICON_CONFIRM_FRAMES, ICON_WAIT_FRAMES, LFA_ICON_TRANSITION)
 
 ACTIVE = 2  # LFA_ICON: the car's own lane centering is steering
 STANDBY = 1
@@ -74,6 +74,35 @@ class TestStockLfaDisabler(unittest.TestCase):
     self.assertTrue(d.requested)
     self.assertEqual(self._run(d, PULSE_FRAMES - 1, hda_window=True), [True] * (PULSE_FRAMES - 1))
     self.assertFalse(any(self._run(d, RECHECK_FRAMES, hda_window=True)))
+
+  def test_latch_waits_for_the_icon_to_come_on_at_the_hda_arm(self):
+    # route 0000009b at 1242.7 s: the ADAS ECU lights the HDA icon 0.05 s before it switches its lane centering on, and
+    # releasing the gate in that gap made it flutter on, off, on inside 60 ms
+    d = StockLfaDisabler()
+    for _ in range(5):  # the window is open, the icon has not come on yet
+      d.update(OFF, True, True, False, True)
+      self.assertFalse(d.take_back)
+    d.update(ACTIVE, True, True, False, True)
+    self.assertFalse(d.take_back)
+    self.assertTrue(d.icon_was_on)
+    # now that it has been on, its going off is the real success
+    d.update(OFF, True, True, False, True)
+    self.assertTrue(d.take_back)
+
+  def test_latch_falls_back_when_the_icon_never_comes_on(self):
+    # nothing to suppress, so do not leave lateral paused with nobody steering
+    d = StockLfaDisabler()
+    out = [d.update(OFF, True, True, False, True) or d.take_back for _ in range(ICON_WAIT_FRAMES + 2)]
+    self.assertFalse(any(out[:ICON_WAIT_FRAMES]))
+    self.assertTrue(d.take_back)
+
+  def test_latch_resets_when_the_window_closes(self):
+    d = StockLfaDisabler()
+    d.update(ACTIVE, True, True, False, True)
+    self.assertTrue(d.icon_was_on)
+    d.update(ACTIVE, False, True, False, True)
+    self.assertFalse(d.icon_was_on)
+    self.assertEqual(d.request_frames, 0)
 
   def test_driver_request_releases_the_gate_once_the_stock_system_lets_go(self):
     d = StockLfaDisabler()
@@ -200,6 +229,18 @@ class TestStockLfaOnTheCar(unittest.TestCase):
     self.assertEqual(out, [True] * PULSE_FRAMES + [False] * 4)
     self.assertTrue(self.CI.CS.stock_lfa_auto_requested)
     self.assertFalse(self.CI.CS.stock_lfa_requested)
+    self._step(True, OFF, True, n=2)
+    self.assertTrue(self.CI.CS.stock_lfa_take_back)
+
+  def test_the_gate_does_not_flutter_at_an_hda_arm(self):
+    # replay of route 0000009b at 1242.7 s: window opens, icon comes on 5 frames later
+    from opendbc.sunnypilot.car.hyundai.values import HyundaiFlagsSP
+    self.CI.CC.CP_SP.flags |= HyundaiFlagsSP.CANFD_AUTO_SUPPRESS_HDA.value
+    for _ in range(5):
+      self._step(True, OFF, True)
+      self.assertFalse(self.CI.CS.stock_lfa_take_back)
+    self._step(True, ACTIVE, True, n=10)
+    self.assertFalse(self.CI.CS.stock_lfa_take_back)
     self._step(True, OFF, True, n=2)
     self.assertTrue(self.CI.CS.stock_lfa_take_back)
 

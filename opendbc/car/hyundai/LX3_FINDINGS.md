@@ -614,3 +614,79 @@ LFA button already worked with cruise main off on every Hyundai CAN-FD car (`all
 3. Wait out `LFA_ICON` = 3. The ADRV sits there for about a second on its way out and a pulse only toggles it back on
    (route `0000007a`: of four pulses, two wasted and one re-armed the feature).
 
+## Both options on, 49 minutes (`0000009b--ff814efa26`, 2026-10-03)
+
+Auto-suppress and separate engage both on. All 50 segments uploaded. Driver reported it felt seamless through HDA
+roads with no felt handoff.
+
+**Auto-suppress fired once and that was enough.** One HDA arming in the whole drive, at 1242.69 s at 71 mph:
+
+| after the HDA icon | event |
+|---|---|
+| 0.000 s | icon lights, the yield gate arms, our lateral goes inactive at 0.023 s |
+| 0.055 s | the ADRV switches its own lane centering on |
+| 0.112 s | our three-frame LFA_BUTTON pulse |
+| 0.226 s | acknowledged, LFA_ICON leaves the active state |
+| 0.260 s | **HDA_ICON goes dark: the ADRV dropped the whole HDA state** |
+| 0.276 s | openpilot commanding again |
+| 1.31 s | LFA_ICON reaches 0 |
+
+The ADRV's own steering authority peaked at 0.056 of full and openpilot was out of command for about 0.18 s. That
+settles the question left open on route `00000087`: the press collapses HDA itself, not just the lane centering. The
+car's lane centering then stayed off for the remaining 28 minutes, including 9 more minutes of cruise on the same
+highway, and HDA never armed again. One pulse per drive, not per arming. Zero watchdog trips in 49 minutes.
+
+**Still to confirm about auto-suppress.** The 0.3 to 1.3 s arming-latency range is bounded at the fast end by this
+single sample; the slow end is still only the arithmetic (0.05 s for the icon, 0.06 s to confirm it, 0.15-0.18 s to
+acknowledge, plus up to 1 s if the ADRV takes its slow route out of the active state). And the "Suppressing stock lane
+centering" alert never rendered on this drive, because the whole event lasted 260 ms; the event fired but the screen
+stayed blank. The alert text is unverified until a slower arming shows up, which is also when the upper end of the
+latency range gets measured.
+
+**Fixed after this drive: the yield gate fluttered at the arm.** The ADRV lights HDA_ICON about 0.05 s before it
+switches its lane centering on, and the take-back latch released the gate in that gap, so `hdaRoadActive` went on, off
+and on again inside 60 ms and lateral paused, resumed and paused again. Harmless, nothing felt, but untidy. The latch
+now requires LFA_ICON to have been seen on during the request before it can release (`icon_was_on` in
+`stock_lfa.py`), with a 0.5 s fallback so that an HDA window where the icon never comes on at all still releases the
+gate rather than leaving nobody steering.
+
+**Separate engage: two of four paths exercised.** Lane-assist-only engage worked at 11.4 s with cruise unavailable, and
+a brake cancel left lateral engaged at both 1206.6 s and 1781.8 s. Cruise-main engaging lateral, and a lane-assist
+press switching lateral off while cruise stays on, were not exercised: the driver pressed the button once at the start
+and MADS stayed enabled for all 49 minutes.
+
+## Three car-side behaviors, documented rather than fixed
+
+**"Consider taking a break" is the camera's, on a bus we cannot reach.** Six instances, each exactly 4.0 s, at 5.7,
+10.4, 15.1, 16.5, 21.8 and 23.0 minutes. The warning is `DAW_WrnMsgSta` = 1 ("Rest Recommend Warning") inside
+`FR_CMR_01_10ms` (0x11A, 16 bytes, 100 Hz) sent by the front camera to the cluster. The same message carries
+`DAW_SysSta`, the camera's own attention level, and `DAW_TimeRstReq`, which asks the cluster to reset its "last break
+time". It is not a cruise timer: the level started at 5, decayed to 1 over the first five minutes, fired each warning
+while sitting at 1 with gaps of 282, 283, 86, 320 and 67 s, then recovered to 5 by 39 minutes once the driving became
+slower and more varied, after which no warnings appeared. The reset request never fired once.
+
+There is no software suppression path. 0x11A appeared 294144 times on E-CAN and never once on the camera bus, so the
+camera reaches the cluster on a pair the panda does not sit between: we cannot block it, and injecting a competing copy
+would leave the camera's own 100 Hz frames in place with conflicting counters. The fix is in the car: `DAW_OptUsmSta`
+reads 2 ("System On"), so switching Driver Attention Warning off in the car's own settings menu stops the camera
+requesting the popup.
+
+**RES after a brake cancel engages at current speed, not the stored speed.** At the cancel the stored speed was 77 mph.
+Thirty-six seconds later a RES+ tap re-engaged at 73 mph, which is the car's speed at that moment (71.4 by wheel speed,
+about 73 on the cluster). `VSetDis` displayed 77 throughout the standby and the car overwrote it on re-engage, so from
+the canceled state (`ACCMode` 4) a RES+ press behaves like a fresh engage rather than a resume. This is not an
+openpilot issue: across the whole drive we transmitted only 0x110 (288862 frames) and 0x362 (57773), zero button frames
+and no cruise message of any kind, and the panda blocked nothing. For reference, a short RES+ tap while engaged is
++1 mph and holding it ramps in 5 mph steps. A "resume to the remembered speed" feature would mean openpilot spoofing
+RES+ taps to climb back, which is openpilot changing the set speed on its own; **deferred**, and if it is ever built it
+belongs behind its own toggle.
+
+**The left bias is real, and it was still converging.** Over 27781 samples of straight, hands-off, confident-lane
+driving at 60-80 mph (about 23 minutes), the car sat 0.17 m left of the lane center the model itself reports, 77 % of
+samples more than 5 cm left against 12 % right, worst 1 % at 0.58 m, in a lane the model measured at 3.30 m wide, while
+openpilot held 0.43 deg of right steering. The sign convention was re-verified rather than assumed: steering angle
+against the model's yaw rate correlates at -0.93. It improved through the drive, 0.229 then 0.163 then 0.131 m by
+ten-minute block, while the learned steering-angle offset climbed from 0.308 to 0.453 deg, and that value persists
+between drives. Calibration was settled at 100 % with 0.95 deg of camera yaw, inside range but the next lever if the
+bias plateaus above about 0.1 m.
+

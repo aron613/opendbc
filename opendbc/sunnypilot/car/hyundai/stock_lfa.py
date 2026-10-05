@@ -34,6 +34,7 @@ LFA_ICON_TRANSITION = 3
 PULSE_FRAMES = 3          # 30 ms at 100 Hz, inside the camera's 2-4 frame pulse
 RECHECK_FRAMES = 150      # 1.5 s, longer than the ADRV's ~1 s transition, so a retry cannot toggle it back on
 ICON_CONFIRM_FRAMES = 6   # 60 ms: LFA_ICON must read non-zero across two 20 Hz messages before we press
+ICON_WAIT_FRAMES = 50     # 0.5 s: how long a request waits for the icon to come on at all before giving up on it
 MAX_ATTEMPTS = 3
 
 
@@ -46,6 +47,8 @@ class StockLfaDisabler:
 
     self.driver_request = False  # the driver pressed LFA while we were yielding: they want the wheel back
     self.auto_request = False    # auto-suppress is on and the ADAS ECU has armed HDA on this road
+    self.request_frames = 0      # frames since the current request opened
+    self.icon_was_on = False     # the car's lane centering has been seen on during this request
     self.requested = False       # a request is in flight (for the UI)
     self.failed = False          # out of attempts with the car's lane centering still on
     self.take_back = False       # the request worked: release the HDA-road gate so openpilot steers
@@ -69,9 +72,22 @@ class StockLfaDisabler:
       self.driver_request = False
     self.auto_request = auto_suppress and hda_window
 
-    # the request worked, or was not needed: let openpilot steer even though the ADAS ECU still shows HDA on this road
-    self.take_back = (self.driver_request or self.auto_request) and not stock_on
-    self.requested = (self.driver_request or self.auto_request) and stock_on
+    request = self.driver_request or self.auto_request
+    if request:
+      self.request_frames += 1
+      self.icon_was_on = self.icon_was_on or stock_on
+    else:
+      self.request_frames = 0
+      self.icon_was_on = False
+
+    # The request worked, or there was nothing to switch off: let openpilot steer even though the ADAS ECU still shows
+    # HDA on this road. The icon has to have been seen on first, because the ADRV switches its lane centering on about
+    # 0.05 s after the HDA icon and releasing the gate in that gap makes it flutter (route
+    # 69fb86b6677ce882/0000009b--ff814efa26 at 1242.7 s: on, off, on inside 60 ms, which paused and resumed lateral
+    # twice for no reason). If the icon never comes on at all, fall back to releasing after ICON_WAIT_FRAMES: there is
+    # nothing to suppress and nobody should be left steering.
+    self.take_back = request and not stock_on and (self.icon_was_on or self.request_frames > ICON_WAIT_FRAMES)
+    self.requested = request and stock_on
 
     # rule 1, second half: once a pulse has started, finish it, but only while the icon still reads on. On route
     # .../0000007a one pulse was cut to a single frame when MADS dropped mid-pulse; that one was honored, but the ADRV
