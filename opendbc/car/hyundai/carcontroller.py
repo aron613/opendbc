@@ -207,15 +207,13 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
     # 2026 Palisade LX3: the car's own lane centering switches itself on when the ADRV arms HDA and then stays on for
     # the rest of the drive, because the only input that toggles it is the camera's LKAS_ALT.LFA_BUTTON, which panda
     # blocks. Spoof that button while it is on and openpilot wants the wheel. MADS enabled (not latActive) is the
-    # intent signal on purpose: it survives the relay watchdog's fault, which is exactly when we need to press. Inside
-    # an HDA-road window we only press if the driver asked with the LFA button, or if auto-suppress is on. See
-    # stock_lfa.py for the three rules and the evidence.
+    # intent signal on purpose: it survives the relay watchdog's fault, which is exactly when we need to press. See
+    # stock_lfa.py for the rules and the evidence.
     self.stock_lfa_button = False
     if self.CP_SP.flags & HyundaiFlagsSP.CANFD_ADRV_LATERAL_TAKEOVER:
       lfa_pressed = any(be.type == ButtonType.lkas and be.pressed for be in CS.out.buttonEvents)
-      auto_suppress = bool(self.CP_SP.flags & HyundaiFlagsSP.CANFD_AUTO_SUPPRESS_HDA)
       self.stock_lfa_button = self.stock_lfa.update(CS.stock_lfa_icon, CS.stock_hda_window, CC_SP.mads.enabled,
-                                                   lfa_pressed, auto_suppress)
+                                                   lfa_pressed)
       driver = self.stock_lfa.driver_request
       CS.stock_lfa_take_back = self.stock_lfa.take_back
       # a driver take-back and an auto-suppress request get different alerts; the driver's own press wins
@@ -331,7 +329,7 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
     # steering control
     can_sends.extend(hyundaicanfd.create_steering_messages(self.packer, self.CP, self.CAN, CC.enabled, apply_steer_req, apply_torque, self.apply_angle_last
                                                            , self.lkas_icon,
-                                                           hide_lfa_status=bool(self.CP_SP.flags & HyundaiFlagsSP.CANFD_HDA_EXP_LFA_STATUS),
+                                                           hide_lfa_status=bool(self.CP_SP.flags & HyundaiFlagsSP.CANFD_ADRV_LATERAL_TAKEOVER),
                                                            lfa_off_when_inactive=bool(self.CP_SP.flags & HyundaiFlagsSP.CANFD_ADRV_LATERAL_TAKEOVER),
                                                            lfa_button=self.stock_lfa_button))
 

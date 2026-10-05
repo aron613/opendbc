@@ -107,17 +107,14 @@ class CarStateExt:
     ret_sp.speedLimit = self.update_speed_limit(cp, cp_cam) * speed_factor
 
     if self.CP_SP.flags & HyundaiFlagsSP.CANFD_ADRV_LATERAL_TAKEOVER:
-      # 1. While stock ACC is engaged the ADRV owns lateral (it arms HDA and substitutes its own LFA_ALT request within
-      #    ~0.7 s of ACCMode going to 1, and the MDPS follows it, not us). Tell MADS to pause lateral for that time.
-      #    With HDA suppression on (the default) this gate is bypassed and the HDA-road gate below plus the relay
-      #    watchdog are the protection.
-      # 1b. HDA-road gate: the ADRV lights HDA_ICON in LFAHDA_CLUSTER (0x1E0, E-CAN, 20 Hz) within ~0.1 s of ACC
+      # 1. HDA-road gate. There is no longer a blanket "stock ACC is engaged" gate: openpilot steers through stock
+      #    cruise on this car, and only yields inside an HDA window, which it then takes back (see stock_lfa.py).
+      #    ret_sp.stockLateralActive is therefore never set here. the ADRV lights HDA_ICON in LFAHDA_CLUSTER (0x1E0, E-CAN, 20 Hz) within ~0.1 s of ACC
       #    engaging whenever its navigation says the road qualifies for HDA, and it then takes the steering itself as
       #    soon as speed passes ~11 mph (route 69fb86b6677ce882/00000050: icon at +0.11 s, takeover at +14.8 s /
       #    11.3 mph; route /00000018: icon at +0.1 s, takeover at +0.2-1.0 s at 15-30 mph). On roads where the icon
       #    stays dark (routes /00000035, /00000037) it never takes over. Yield lateral while the icon is lit with ACC
       #    engaged so the handoff is clean instead of a watchdog trip.
-      hda_suppressed = bool(self.CP_SP.flags & HyundaiFlagsSP.CANFD_HDA_EXP_LFA_STATUS)
       hda_window = ret.cruiseState.enabled and cp.vl["LFAHDA_CLUSTER"]["HDA_ICON"] == 1
       self.stock_hda_window = hda_window
       self.stock_lfa_icon = int(cp.vl["LFAHDA_CLUSTER"]["LFA_ICON"])
@@ -130,7 +127,6 @@ class CarStateExt:
       ret_sp.stockLfaOffFailed = self.stock_lfa_failed
       ret_sp.stockLfaAutoSuppressing = self.stock_lfa_auto_requested
       ret_sp.stockLfaAutoSuppressFailed = self.stock_lfa_auto_failed
-      ret_sp.stockLateralActive = ret.cruiseState.enabled and not hda_suppressed and not hda_road
 
       # 2. Relay watchdog: LFA_ALT (0xCB) on E-CAN is what the MDPS steers to. Normally it is a byte-faithful relay of
       #    our last LKAS_ALT. If it stops matching while we are commanding, we have lost authority: raise the

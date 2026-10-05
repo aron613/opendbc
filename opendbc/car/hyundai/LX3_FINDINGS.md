@@ -690,3 +690,40 @@ ten-minute block, while the learned steering-angle offset climbed from 0.308 to 
 between drives. Calibration was settled at 100 % with 0.95 deg of camera yaw, inside range but the next lever if the
 bias plateaus above about 0.1 m.
 
+## Current behavior, 2026-10-04: no LX3 toggles
+
+A week of driving on all road types with both options on. They are now the only behavior, matching how openpilot works
+on any other supported HDA2 car, and all three LX3 settings entries are gone. **This section supersedes the toggle
+descriptions in the sections above.**
+
+| behavior | how it works now |
+|---|---|
+| HDA arming | openpilot pulses the car's lane centering off as soon as the ADAS ECU flags an HDA road. No toggle. |
+| driver LFA press during a yield | still a take-back request, which is also the way back if the automatic pulse ever fails |
+| stuck icon | three attempts then back off, with "Stock HDA active / Cancel cruise to override" |
+| relay watchdog | unchanged, still the backstop |
+| cruise-main on | engages cruise and lateral together, governed by the general MADS main-cruise setting like any other car |
+| cruise-main off | turns cruise off and leaves lateral engaged |
+| LFA button | engages and disengages lateral, never touches cruise |
+| brake cancel | leaves lateral engaged, which was already true before any of this |
+| LFA status masking | fixed on: `LKA_RcgSta` 0 and `LKA_SysIndReq` 1 while active, gated on the platform flag |
+| blanket stock-cruise gate | **removed.** openpilot steers through stock cruise and only yields inside an HDA window |
+
+What that means in code: `HyundaiFlagsSP.CANFD_HDA_EXP_LFA_STATUS` and `CANFD_AUTO_SUPPRESS_HDA` are gone, both gated
+on `CANFD_ADRV_LATERAL_TAKEOVER` instead; the params `HyundaiLx3HdaSuppressionExperiment`, `HyundaiLx3AutoSuppressHda`
+and `HyundaiLx3SeparateEngage` are gone along with their settings entries and the two helper functions that read them;
+`carStateSP.stockLateralActive` is never set on this platform any more, so its event and alert are unreachable here
+(the field stays in the schema and the MADS handling stays generic, in case another platform ever needs it);
+`carParamsSP.hdaSuppressionExperiment` is no longer written.
+
+Two judgment calls worth recording. The LFA-status masking was kept as fixed behavior rather than dropped, even though
+route `00000050` proved it has no causal effect on HDA arming, because it is what the week of driving used and dropping
+it would change what we report to the ADAS ECU in an untested direction; the known cost is that the cluster shows no
+lane graphics while openpilot is active, and it can be removed later in its own change. And the cruise-main *engage*
+side was left to the general MADS setting rather than forced on, since "engages both" is the normal behavior and
+overriding a general setting from a platform flag would be a surprise; with that setting at its default the observable
+result is identical to the old toggle being on.
+
+Still open from route `0000009b`: the arming-latency range is bounded at the fast end by one sample, and the
+"Suppressing stock lane centering" alert has never rendered because the one arming lasted 260 ms.
+

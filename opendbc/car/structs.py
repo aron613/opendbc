@@ -62,7 +62,7 @@ class CarParamsSP:
   pcmCruiseSpeed: bool = auto_field()
   intelligentCruiseButtonManagementAvailable: bool = auto_field()
   enableGasInterceptor: bool = auto_field()
-  hdaSuppressionExperiment: int = auto_field()  # 0 off, 1 A, 2 B, 3 A+B; logged so each route shows what ran
+  hdaSuppressionExperiment: int = auto_field()  # unused since the LX3 toggles were removed; kept for old-route compat
 
   neuralNetworkLateralControl: 'CarParamsSP.NeuralNetworkLateralControl' = field(default_factory=lambda: CarParamsSP.NeuralNetworkLateralControl())
 

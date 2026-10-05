@@ -23,9 +23,9 @@ See the LICENSE.md file in the root directory for more details.
 #  1. Never pulse while LFA_ICON reads off. The button is a toggle, so a pulse there switches the car's lane centering
 #     ON. That is also why the icon has to be confirmed over two 20 Hz messages (ICON_CONFIRM_FRAMES) before the first
 #     pulse of a sequence.
-#  2. Never pulse on our own inside an HDA window unless auto-suppress is on: there we have deliberately handed the
-#     stock system the wheel, and switching it off would leave nobody steering. A driver LFA press is different, it is
-#     them asking for the wheel back.
+#  2. Never pulse while the car's lane centering is off, which is the same as rule 1 seen from the other side: outside
+#     an HDA window there is nothing to switch off, and inside one the icon is what tells us the stock system has taken
+#     the wheel. A driver LFA press is the other way in, for the case where the icon is on and we are yielding.
 #  3. Wait out the transition state. The ADRV shows LFA_ICON = 3 for about a second on its way out of the active state;
 #     a pulse there only toggles it back on (route .../0000007a: of four pulses two were wasted and one re-armed it).
 LFA_ICON_OFF = 0
@@ -46,7 +46,7 @@ class StockLfaDisabler:
     self.icon_on_frames = 0
 
     self.driver_request = False  # the driver pressed LFA while we were yielding: they want the wheel back
-    self.auto_request = False    # auto-suppress is on and the ADAS ECU has armed HDA on this road
+    self.auto_request = False    # the ADAS ECU has armed HDA on this road, so we are switching its lane centering off
     self.request_frames = 0      # frames since the current request opened
     self.icon_was_on = False     # the car's lane centering has been seen on during this request
     self.requested = False       # a request is in flight (for the UI)
@@ -59,8 +59,7 @@ class StockLfaDisabler:
     self.attempts = 0
     self.failed = False
 
-  def update(self, lfa_icon: int, hda_window: bool, want_lateral: bool, lfa_pressed: bool,
-             auto_suppress: bool = False) -> bool:
+  def update(self, lfa_icon: int, hda_window: bool, want_lateral: bool, lfa_pressed: bool) -> bool:
     """One 100 Hz step. Returns True while LKAS_ALT.LFA_BUTTON should be set this frame."""
     stock_on = lfa_icon != LFA_ICON_OFF
     self.icon_on_frames = self.icon_on_frames + 1 if stock_on else 0
@@ -70,7 +69,7 @@ class StockLfaDisabler:
       self._rearm()
     if not hda_window:
       self.driver_request = False
-    self.auto_request = auto_suppress and hda_window
+    self.auto_request = hda_window
 
     request = self.driver_request or self.auto_request
     if request:
@@ -96,9 +95,9 @@ class StockLfaDisabler:
       self.pulse_frames -= 1
       return True
 
-    # nothing to do: the car's lane centering is already off, we are not asking for the wheel, or we are inside an
-    # HDA window with neither a driver request nor auto-suppress (rule 2). Re-arm a fresh set of attempts.
-    if not (stock_on and want_lateral and (not hda_window or self.driver_request or self.auto_request)):
+    # nothing to do: the car's lane centering is already off, or we are not asking for the wheel. Re-arm a fresh set
+    # of attempts.
+    if not (stock_on and want_lateral):
       self._rearm()
       return False
 

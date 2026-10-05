@@ -10,8 +10,8 @@ OFF = 0
 
 
 class TestStockLfaDisabler(unittest.TestCase):
-  def _run(self, d, n, icon=ACTIVE, hda_window=False, want_lateral=True, pressed=False, auto=False):
-    return [d.update(icon, hda_window, want_lateral, pressed, auto) for _ in range(n)]
+  def _run(self, d, n, icon=ACTIVE, hda_window=False, want_lateral=True, pressed=False):
+    return [d.update(icon, hda_window, want_lateral, pressed) for _ in range(n)]
 
   @staticmethod
   def _pulses(out):
@@ -32,75 +32,58 @@ class TestStockLfaDisabler(unittest.TestCase):
     d = StockLfaDisabler()
     self.assertFalse(any(self._run(d, 500, want_lateral=False)))
 
-  def test_auto_suppress_presses_inside_an_hda_window_without_a_press(self):
+  def test_presses_inside_an_hda_window_without_being_asked(self):
     d = StockLfaDisabler()
-    out = self._run(d, ICON_CONFIRM_FRAMES + PULSE_FRAMES, hda_window=True, auto=True)
+    out = self._run(d, ICON_CONFIRM_FRAMES + PULSE_FRAMES, hda_window=True)
     self.assertEqual(self._pulses(out), [[ICON_CONFIRM_FRAMES - 1, PULSE_FRAMES]])
     self.assertTrue(d.auto_request)
     self.assertFalse(d.driver_request)
     self.assertTrue(d.requested)
     # it releases the gate the same way once the car lets go
-    self._run(d, 3, icon=OFF, hda_window=True, auto=True)
+    self._run(d, 3, icon=OFF, hda_window=True)
     self.assertTrue(d.take_back)
     # and it never presses while the icon reads off (rule 1)
-    self.assertFalse(any(self._run(d, 400, icon=OFF, hda_window=True, auto=True)))
+    self.assertFalse(any(self._run(d, 400, icon=OFF, hda_window=True)))
 
-  def test_auto_suppress_off_leaves_the_window_alone(self):
+  def test_suppress_failure_is_reported(self):
     d = StockLfaDisabler()
-    self.assertFalse(any(self._run(d, 500, hda_window=True, auto=False)))
-    self.assertFalse(d.auto_request)
-
-  def test_auto_suppress_failure_is_reported(self):
-    d = StockLfaDisabler()
-    self._run(d, ICON_CONFIRM_FRAMES + (PULSE_FRAMES + RECHECK_FRAMES) * MAX_ATTEMPTS + 1, hda_window=True, auto=True)
+    self._run(d, ICON_CONFIRM_FRAMES + (PULSE_FRAMES + RECHECK_FRAMES) * MAX_ATTEMPTS + 1, hda_window=True)
     self.assertTrue(d.failed)
     self.assertTrue(d.auto_request)
     self.assertFalse(d.driver_request)
 
-  def test_driver_press_wins_over_auto(self):
+  def test_driver_press_is_distinguished_from_the_automatic_request(self):
     d = StockLfaDisabler()
-    self._run(d, 1, hda_window=True, auto=True, pressed=True)
+    self._run(d, 1, hda_window=True, pressed=True)
     self.assertTrue(d.driver_request)
     self.assertTrue(d.auto_request)
-
-  def test_silent_inside_an_hda_window_until_the_driver_asks(self):
-    # we handed the stock system the wheel there: pressing on our own would leave nobody steering
-    d = StockLfaDisabler()
-    self.assertFalse(any(self._run(d, 500, hda_window=True)))
-    self.assertFalse(d.requested)
-    # the driver presses LFA: that is a request for the wheel back, and it pulses
-    self.assertTrue(d.update(ACTIVE, True, True, True))
-    self.assertTrue(d.driver_request)
-    self.assertTrue(d.requested)
-    self.assertEqual(self._run(d, PULSE_FRAMES - 1, hda_window=True), [True] * (PULSE_FRAMES - 1))
-    self.assertFalse(any(self._run(d, RECHECK_FRAMES, hda_window=True)))
 
   def test_latch_waits_for_the_icon_to_come_on_at_the_hda_arm(self):
     # route 0000009b at 1242.7 s: the ADAS ECU lights the HDA icon 0.05 s before it switches its lane centering on, and
     # releasing the gate in that gap made it flutter on, off, on inside 60 ms
     d = StockLfaDisabler()
     for _ in range(5):  # the window is open, the icon has not come on yet
-      d.update(OFF, True, True, False, True)
+      d.update(OFF, True, True, False)
       self.assertFalse(d.take_back)
-    d.update(ACTIVE, True, True, False, True)
+    d.update(ACTIVE, True, True, False)
     self.assertFalse(d.take_back)
     self.assertTrue(d.icon_was_on)
     # now that it has been on, its going off is the real success
-    d.update(OFF, True, True, False, True)
+    d.update(OFF, True, True, False)
     self.assertTrue(d.take_back)
 
   def test_latch_falls_back_when_the_icon_never_comes_on(self):
     # nothing to suppress, so do not leave lateral paused with nobody steering
     d = StockLfaDisabler()
-    out = [d.update(OFF, True, True, False, True) or d.take_back for _ in range(ICON_WAIT_FRAMES + 2)]
+    out = [d.update(OFF, True, True, False) or d.take_back for _ in range(ICON_WAIT_FRAMES + 2)]
     self.assertFalse(any(out[:ICON_WAIT_FRAMES]))
     self.assertTrue(d.take_back)
 
   def test_latch_resets_when_the_window_closes(self):
     d = StockLfaDisabler()
-    d.update(ACTIVE, True, True, False, True)
+    d.update(ACTIVE, True, True, False)
     self.assertTrue(d.icon_was_on)
-    d.update(ACTIVE, False, True, False, True)
+    d.update(ACTIVE, False, True, False)
     self.assertFalse(d.icon_was_on)
     self.assertEqual(d.request_frames, 0)
 
@@ -214,19 +197,16 @@ class TestStockLfaOnTheCar(unittest.TestCase):
     return lfa_button
 
   def test_pulses_only_when_the_car_lane_centering_is_on_and_we_want_the_wheel(self):
-    self.assertFalse(any(self._step(True, OFF, False, n=20)))          # car's lane centering off
-    self.assertFalse(any(self._step(False, ACTIVE, False, n=20)))      # MADS not armed
-    self.assertFalse(any(self._step(True, ACTIVE, True, n=20)))        # HDA window, driver has not asked
+    self.assertFalse(any(self._step(True, OFF, False, n=20)))      # car's lane centering off
+    self.assertFalse(any(self._step(False, ACTIVE, False, n=20)))  # MADS not armed
     out = self._step(True, ACTIVE, False, n=PULSE_FRAMES + 5)
     self.assertEqual(out, [True] * PULSE_FRAMES + [False] * 5)
 
-  def test_auto_suppress_flag_pulses_inside_an_hda_window(self):
-    from opendbc.sunnypilot.car.hyundai.values import HyundaiFlagsSP
-    self.assertFalse(any(self._step(True, ACTIVE, True, n=20)))  # off by default
-    self.CI.CC.CP_SP.flags |= HyundaiFlagsSP.CANFD_AUTO_SUPPRESS_HDA.value
-    # the icon was already confirmed by the 20 frames above, so the pulse starts immediately
-    out = self._step(True, ACTIVE, True, n=PULSE_FRAMES + 4)
-    self.assertEqual(out, [True] * PULSE_FRAMES + [False] * 4)
+  def test_pulses_inside_an_hda_window_with_no_toggle_and_no_press(self):
+    out = self._step(True, ACTIVE, True, n=ICON_CONFIRM_FRAMES + PULSE_FRAMES)
+    first = ICON_CONFIRM_FRAMES - 1
+    self.assertEqual(out[:first], [False] * first)
+    self.assertEqual(out[first:first + PULSE_FRAMES], [True] * PULSE_FRAMES)
     self.assertTrue(self.CI.CS.stock_lfa_auto_requested)
     self.assertFalse(self.CI.CS.stock_lfa_requested)
     self._step(True, OFF, True, n=2)
@@ -234,8 +214,6 @@ class TestStockLfaOnTheCar(unittest.TestCase):
 
   def test_the_gate_does_not_flutter_at_an_hda_arm(self):
     # replay of route 0000009b at 1242.7 s: window opens, icon comes on 5 frames later
-    from opendbc.sunnypilot.car.hyundai.values import HyundaiFlagsSP
-    self.CI.CC.CP_SP.flags |= HyundaiFlagsSP.CANFD_AUTO_SUPPRESS_HDA.value
     for _ in range(5):
       self._step(True, OFF, True)
       self.assertFalse(self.CI.CS.stock_lfa_take_back)
@@ -244,11 +222,15 @@ class TestStockLfaOnTheCar(unittest.TestCase):
     self._step(True, OFF, True, n=2)
     self.assertTrue(self.CI.CS.stock_lfa_take_back)
 
-  def test_driver_press_in_an_hda_window_pulses_and_releases_the_gate(self):
-    self.assertFalse(any(self._step(True, ACTIVE, True, n=20)))
-    self.assertTrue(self._step(True, ACTIVE, True, n=1, pressed=True)[0])  # icon already confirmed by the 20 frames
+  def test_driver_press_in_an_hda_window_is_reported_as_the_drivers(self):
+    self._step(True, ACTIVE, True, n=ICON_CONFIRM_FRAMES + PULSE_FRAMES)  # the automatic request has run
+    self.assertTrue(self.CI.CS.stock_lfa_auto_requested)
+    self.assertFalse(self.CI.CS.stock_lfa_requested)
+    # the driver asks as well: a fresh pulse, and the alert becomes theirs
+    self.assertTrue(self._step(True, ACTIVE, True, n=1, pressed=True)[0])
     self.assertEqual(self._step(True, ACTIVE, True, n=PULSE_FRAMES - 1), [True] * (PULSE_FRAMES - 1))
     self.assertTrue(self.CI.CS.stock_lfa_requested)
+    self.assertFalse(self.CI.CS.stock_lfa_auto_requested)
     self.assertFalse(self.CI.CS.stock_lfa_take_back)
     self._step(True, OFF, True, n=2)
     self.assertTrue(self.CI.CS.stock_lfa_take_back)
